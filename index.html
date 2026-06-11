@@ -45,80 +45,98 @@ const ACC_TYPES = {
   outro:        { label:"Outro",        emoji:"💼", color:"#64748b", auto:true },
 };
 const MS  = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
-
-// ── Mapeamento de tipos do Excel antigo ──────────────────────────
-const TIPO_MAP = {
-  "rendimentos":"rendimentos","rendimento":"rendimentos",
-  "poupanças":"poupancas","poupancas":"poupancas","poupança":"poupancas","investimentos":"poupancas","poupanças / investimentos":"poupancas",
-  "despesas essenciais":"essenciais","essenciais":"essenciais","despesas essenciais / recorrentes":"essenciais","recorrentes":"essenciais",
-  "despesas variáveis":"variaveis","variáveis":"variaveis","variaveis":"variaveis","despesas variáveis / não recorrentes":"variaveis","não recorrentes":"variaveis",
-};
-
-// ── Palavras-chave para classificação automática de extratos ─────
-const AUTO_CLASSIFY = [
-  // Supermercado
-  {kw:["pingo doce","continente","lidl","aldi","minipreço","minipreco","mercadona","intermarche","intermarché","el corte","spar","froiz"],sk:"essenciais",cat:"Supermercado"},
-  // Combustível
-  {kw:["galp","bp ","repsol","cepsa","shell","prio","total energies","combustivel"],sk:"essenciais",cat:"Combustível"},
-  // Electricidade e Gás
-  {kw:["edp ","endesa","iberdrola","galp energia","enat","goldenergy","electricidade","eletricidade"],sk:"essenciais",cat:"Electricidade e Gás"},
-  // Água
-  {kw:["epal","aguas de","águas de","smas","indaqua"],sk:"essenciais",cat:"Água"},
-  // Internet / Telemóvel
-  {kw:["nos ","meo ","vodafone","nowo","internet","fibra"],sk:"essenciais",cat:"Internet"},
-  {kw:["telemovel","telemóvel","nos telemovel","meo telemovel","vodafone telemovel"],sk:"essenciais",cat:"Telemóvel"},
-  // Portagens
-  {kw:["via verde","portagem","portagens","brisa"],sk:"essenciais",cat:"Portagens"},
-  // Restaurantes
-  {kw:["mcdonald","mcdonalds","kfc","burger king","pizza","nandos","subway","restaurante","tasca","café","snack"],sk:"variaveis",cat:"Restaurantes"},
-  // Farmácia
-  {kw:["farmácia","farmacia","wells","holon","saúde"],sk:"essenciais",cat:"Farmácia"},
-  // Ginásio
-  {kw:["ginásio","ginasio","holmes place","fitness","pump","solinca","workout"],sk:"essenciais",cat:"Ginásio"},
-  // Subscrições
-  {kw:["netflix","spotify","hbo","disney","amazon prime","apple","google one","youtube"],sk:"essenciais",cat:"Subscrições"},
-  // Roupa
-  {kw:["zara","h&m","pull","bershka","mango","primark","stradivarius","roupa","footlocker"],sk:"variaveis",cat:"Roupa/sapatos"},
-  // Estacionamento
-  {kw:["emel","parking","estacionamento","parque"],sk:"variaveis",cat:"Estacionamentos"},
-  // Seguro carro
-  {kw:["fidelidade","allianz","ageas","tranquilidade","generali","axa","zurich","seguro auto","seguro carro"],sk:"essenciais",cat:"Seguro - carro"},
-];
-
-function autoClassify(desc) {
-  const d = (desc||"").toLowerCase();
-  for (const rule of AUTO_CLASSIFY) {
-    if (rule.kw.some(k=>d.includes(k))) return {sk:rule.sk, cat:rule.cat};
-  }
-  return {sk:"variaveis", cat:"Outros"};
-}
-
-// ── Parser CSV simples ───────────────────────────────────────────
-function parseCSV(text) {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 2) return [];
-  // detecta separador
-  const sep = lines[0].includes(";") ? ";" : ",";
-  const headers = lines[0].split(sep).map(h=>h.replace(/^"|"$/g,"").trim().toLowerCase());
-  return lines.slice(1).filter(l=>l.trim()).map(line=>{
-    const cols = line.split(sep).map(c=>c.replace(/^"|"$/g,"").trim());
-    const obj = {};
-    headers.forEach((h,i)=>obj[h]=cols[i]||"");
-    return obj;
-  });
-}
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 const fmt = v => new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR"}).format(v||0);
 const pn  = s => parseFloat((s||"0").toString().replace(",",".")) || 0;
 const todayStr = () => new Date().toISOString().split("T")[0];
-const isDed     = (sk,cat) => SECTIONS[sk]?.deductions?.includes(cat);
+const isDed     = (sk,cat) => SECTIONS[sk] && SECTIONS[sk].deductions && SECTIONS[sk].deductions.includes(cat);
 const iSign     = (sk,cat) => isDed(sk,cat) ? -1 : 1;
-const isAuto    = a => ACC_TYPES[a.type]?.auto !== false;
+const isAuto    = a => ACC_TYPES[a.type] ? ACC_TYPES[a.type].auto !== false : true;
 const isTransfer= t => t.sk === "transfer";
 const COL = "1fr 110px 110px";
 const EMPTY_DATA = { txs:[], budgets:{}, accounts:[], wealthHist:[] };
 
-// ── Gráficos SVG nativos (sem dependências externas) ─────────────
+// ── Mapeamento de tipos do Excel antigo ──────────────────────────
+const TIPO_MAP = {
+  "rendimentos":"rendimentos","rendimento":"rendimentos",
+  "poupancas":"poupancas","poupanca":"poupancas","investimentos":"poupancas",
+  "despesas essenciais":"essenciais","essenciais":"essenciais","recorrentes":"essenciais",
+  "despesas variaveis":"variaveis","variaveis":"variaveis","nao recorrentes":"variaveis"
+};
+const normTipo = s => (s||"").toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+  .replace(/\s*\/\s*/g," ").replace(/\s+/g," ").trim();
+const mapTipo = s => {
+  const n = normTipo(s);
+  if (TIPO_MAP[n]) return TIPO_MAP[n];
+  if (n.includes("rendiment")) return "rendimentos";
+  if (n.includes("poupan")||n.includes("investiment")) return "poupancas";
+  if (n.includes("essencia")||n.includes("recorrente")&&!n.includes("nao")) return "essenciais";
+  return "variaveis";
+};
+
+// ── Classificação automática de extratos ─────────────────────────
+const AUTO_RULES = [
+  { kw:["pingo doce","continente","lidl","aldi","minipreco","mercadona","intermarche","auchan","spar"], sk:"essenciais", cat:"Supermercado" },
+  { kw:["galp","repsol","cepsa","shell","prio","bp "], sk:"essenciais", cat:"Combustível" },
+  { kw:["edp","endesa","iberdrola","goldenergy"], sk:"essenciais", cat:"Electricidade e Gás" },
+  { kw:["epal","aguas de","smas","indaqua"], sk:"essenciais", cat:"Água" },
+  { kw:["nos comunicacoes","meo","vodafone","nowo"], sk:"essenciais", cat:"Internet" },
+  { kw:["via verde","portagem","brisa"], sk:"essenciais", cat:"Portagens" },
+  { kw:["farmacia","wells"], sk:"essenciais", cat:"Farmácia" },
+  { kw:["fitness","ginasio","holmes place","solinca","pump"], sk:"essenciais", cat:"Ginásio" },
+  { kw:["netflix","spotify","hbo","disney","prime","youtube premium"], sk:"essenciais", cat:"Subscrições" },
+  { kw:["mcdonald","burger king","kfc","pizza","restaurante","uber eats","glovo","bolt food"], sk:"variaveis", cat:"Restaurantes" },
+  { kw:["zara","hm ","bershka","pull and bear","primark","mango","stradivarius","decathlon"], sk:"variaveis", cat:"Roupa/sapatos" },
+  { kw:["emel","parque","parking","estacionamento"], sk:"variaveis", cat:"Estacionamentos" },
+  { kw:["fnac","worten","amazon"], sk:"variaveis", cat:"Livros/Gadgets/Cursos" },
+  { kw:["fidelidade","allianz","ageas","tranquilidade","axa","zurich"], sk:"essenciais", cat:"Seguro - carro" },
+  { kw:["vencimento","ordenado","salario"], sk:"rendimentos", cat:"Vencimento Base" }
+];
+const autoClassify = desc => {
+  const d = (desc||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  for (let i=0;i<AUTO_RULES.length;i++) {
+    const rule = AUTO_RULES[i];
+    for (let j=0;j<rule.kw.length;j++) {
+      if (d.includes(rule.kw[j])) return { sk:rule.sk, cat:rule.cat };
+    }
+  }
+  return { sk:"variaveis", cat:"Outros" };
+};
+
+// ── Parser CSV ───────────────────────────────────────────────────
+const parseCSV = text => {
+  const lines = text.trim().split(/\r?\n/).filter(l=>l.trim());
+  if (lines.length < 2) return [];
+  const sep = (lines[0].split(";").length > lines[0].split(",").length) ? ";" : ",";
+  const clean = s => s.replace(/^"+|"+$/g,"").trim();
+  const headers = lines[0].split(sep).map(h=>clean(h).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,""));
+  return lines.slice(1).map(line=>{
+    const cols = line.split(sep).map(clean);
+    const obj = {};
+    headers.forEach((h,i)=>{ obj[h] = cols[i]||""; });
+    return obj;
+  });
+};
+
+const parseDate = s => {
+  if (!s) return todayStr();
+  const m1 = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
+  if (m1) {
+    const y = m1[3].length===2 ? "20"+m1[3] : m1[3];
+    return y+"-"+m1[2].padStart(2,"0")+"-"+m1[1].padStart(2,"0");
+  }
+  const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m2) return m2[0];
+  return todayStr();
+};
+
+const parseVal = s => {
+  const v = (s||"0").toString().replace("€","").replace(/\s/g,"").replace(",",".");
+  return Math.abs(parseFloat(v)||0);
+};
+
+// ── Gráficos SVG nativos ─────────────────────────────────────────
 function SimplePie({ data }) {
   const total = data.reduce((s,d)=>s+d.value,0);
   if (total<=0) return null;
@@ -128,11 +146,11 @@ function SimplePie({ data }) {
     const frac = d.value/total;
     const a0 = angle, a1 = angle + frac*2*Math.PI;
     angle = a1;
-    if (frac >= 0.999) return { ...d, full:true, frac };
+    if (frac >= 0.999) return Object.assign({}, d, {full:true, frac});
     const x0=cx+r*Math.cos(a0), y0=cy+r*Math.sin(a0);
     const x1=cx+r*Math.cos(a1), y1=cy+r*Math.sin(a1);
     const large = frac>0.5?1:0;
-    return { ...d, frac, path:`M ${cx} ${cy} L ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} Z` };
+    return Object.assign({}, d, {frac, path:"M "+cx+" "+cy+" L "+x0+" "+y0+" A "+r+" "+r+" 0 "+large+" 1 "+x1+" "+y1+" Z"});
   });
   return (
     <div className="flex items-center gap-4 flex-wrap">
@@ -141,7 +159,7 @@ function SimplePie({ data }) {
           ? <circle key={i} cx={cx} cy={cy} r={r} fill={s.color}/>
           : <path key={i} d={s.path} fill={s.color} stroke="white" strokeWidth="1.5"/>)}
       </svg>
-      <div className="space-y-1.5 flex-1 min-w-[140px]">
+      <div className="space-y-1.5 flex-1" style={{minWidth:140}}>
         {slices.map((s,i)=>(
           <div key={i} className="flex items-center gap-2 text-xs">
             <span className="w-3 h-3 rounded-sm flex-shrink-0" style={{backgroundColor:s.color}}></span>
@@ -156,7 +174,7 @@ function SimplePie({ data }) {
 }
 
 function SimpleBars({ data }) {
-  const max = Math.max(...data.map(d=>Math.max(d.previsto,d.realizado)), 1);
+  const max = Math.max.apply(null, data.map(d=>Math.max(d.previsto,d.realizado)).concat([1]));
   return (
     <div className="space-y-3">
       {data.map((d,i)=>(
@@ -166,10 +184,10 @@ function SimpleBars({ data }) {
             <span className="text-gray-400">P: {fmt(d.previsto)} · R: <span className="font-semibold text-gray-700">{fmt(d.realizado)}</span></span>
           </div>
           <div className="bg-gray-100 rounded-full h-2 mb-1">
-            <div className="h-2 rounded-full" style={{width:`${d.previsto/max*100}%`,backgroundColor:"#cbd5e1"}}/>
+            <div className="h-2 rounded-full" style={{width:(d.previsto/max*100)+"%",backgroundColor:"#cbd5e1"}}/>
           </div>
           <div className="bg-gray-100 rounded-full h-2">
-            <div className="h-2 rounded-full" style={{width:`${d.realizado/max*100}%`,backgroundColor:"#3b82f6"}}/>
+            <div className="h-2 rounded-full" style={{width:(d.realizado/max*100)+"%",backgroundColor:"#3b82f6"}}/>
           </div>
         </div>
       ))}
@@ -185,16 +203,16 @@ function SimpleLine({ data }) {
   if (data.length<2) return null;
   const W=320, H=120, pad=10;
   const vals = data.map(d=>d.total);
-  const min = Math.min(...vals), max = Math.max(...vals);
-  const range = max-min || 1;
+  const min = Math.min.apply(null,vals), max = Math.max.apply(null,vals);
+  const range = (max-min) || 1;
   const pts = data.map((d,i)=>({
     x: pad + i*(W-2*pad)/(data.length-1),
-    y: H-pad - (d.total-min)/range*(H-2*pad),
+    y: H-pad - (d.total-min)/range*(H-2*pad)
   }));
-  const poly = pts.map(p=>`${p.x},${p.y}`).join(" ");
+  const poly = pts.map(p=>p.x+","+p.y).join(" ");
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{maxHeight:140}}>
+      <svg viewBox={"0 0 "+W+" "+H} className="w-full" style={{maxHeight:140}}>
         <polyline points={poly} fill="none" stroke="#7c3aed" strokeWidth="2"/>
         {pts.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r="3" fill="#7c3aed"/>)}
       </svg>
@@ -221,13 +239,13 @@ function AuthScreen({ onLogin }) {
     setError(""); setInfo(""); setLoading(true);
     try {
       if (mode === "login") {
-        const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
-        if (error) throw error;
-        onLogin(data.user);
+        const res = await sb.auth.signInWithPassword({ email: email, password: pass });
+        if (res.error) throw res.error;
+        onLogin(res.data.user);
       } else {
         if (pass.length < 6) throw new Error("A password deve ter pelo menos 6 caracteres");
-        const { error } = await sb.auth.signUp({ email, password: pass });
-        if (error) throw error;
+        const res = await sb.auth.signUp({ email: email, password: pass });
+        if (res.error) throw res.error;
         setInfo("Conta criada! Verifica o teu email para confirmar, depois faz login.");
         setMode("login");
       }
@@ -235,7 +253,7 @@ function AuthScreen({ onLogin }) {
       const msgs = {
         "Invalid login credentials": "Email ou password incorretos",
         "Email not confirmed": "Confirma primeiro o teu email (vê a caixa de entrada)",
-        "User already registered": "Já existe uma conta com este email",
+        "User already registered": "Já existe uma conta com este email"
       };
       setError(msgs[e.message] || e.message || "Erro desconhecido");
     } finally { setLoading(false); }
@@ -250,20 +268,20 @@ function AuthScreen({ onLogin }) {
           <h1 className="text-xl font-bold text-gray-900">Orçamento Pessoal</h1>
           <p className="text-xs text-gray-400 mt-1">{mode==="login"?"Entra na tua conta":"Cria a tua conta"}</p>
         </div>
-        {error && <div className="mb-3 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{error}</div>}
-        {info  && <div className="mb-3 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-700">{info}</div>}
+        {error ? <div className="mb-3 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{error}</div> : null}
+        {info  ? <div className="mb-3 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-700">{info}</div> : null}
         <div className="space-y-3">
           <div>
             <div className="text-xs text-gray-500 mb-1">Email</div>
             <input type="email" value={email} onChange={e=>setEmail(e.target.value)}
-              onKeyDown={e=>e.key==="Enter"&&submit()}
+              onKeyDown={e=>{ if(e.key==="Enter") submit(); }}
               placeholder="o-teu@email.com"
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/>
           </div>
           <div>
             <div className="text-xs text-gray-500 mb-1">Password</div>
             <input type="password" value={pass} onChange={e=>setPass(e.target.value)}
-              onKeyDown={e=>e.key==="Enter"&&submit()}
+              onKeyDown={e=>{ if(e.key==="Enter") submit(); }}
               placeholder="••••••••"
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/>
           </div>
@@ -274,7 +292,7 @@ function AuthScreen({ onLogin }) {
           </button>
         </div>
         <div className="text-center mt-4">
-          <button onClick={()=>{setMode(m=>m==="login"?"register":"login");setError("");setInfo("");}}
+          <button onClick={()=>{setMode(mode==="login"?"register":"login");setError("");setInfo("");}}
             className="text-xs text-blue-600">
             {mode==="login" ? "Não tens conta? Regista-te" : "Já tens conta? Entra"}
           </button>
@@ -293,14 +311,14 @@ function App() {
   const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
-    sb.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user || null);
+    sb.auth.getSession().then(res => {
+      setUser(res.data.session ? res.data.session.user : null);
       setAuthReady(true);
     });
-    const { data: { subscription } } = sb.auth.onAuthStateChange((_e, session) => {
-      setUser(session?.user || null);
+    const sub = sb.auth.onAuthStateChange((_e, session) => {
+      setUser(session ? session.user : null);
     });
-    return () => subscription.unsubscribe();
+    return () => sub.data.subscription.unsubscribe();
   }, []);
 
   if (!authReady) return <div className="flex h-screen items-center justify-center bg-gray-50 text-gray-400 text-sm">A carregar...</div>;
@@ -335,33 +353,32 @@ function Budget({ user, onLogout }) {
   const [confirmDel, setConfirmDel]   = useState(null);
   const [undoSnap, setUndoSnap]       = useState(null);
   const [showMenu, setShowMenu]       = useState(false);
-  // Importação
-  const [importMode, setImportMode]   = useState(null); // null | 'excel' | 'bank'
-  const [importRows, setImportRows]   = useState([]);   // linhas pré-visualização
-  const [importAcc, setImportAcc]     = useState("");   // conta destino (modo banco)
-  const [importSel, setImportSel]     = useState({});   // quais linhas estão selecionadas
+  const [importMode, setImportMode]   = useState(null);
+  const [importRows, setImportRows]   = useState([]);
+  const [importAcc, setImportAcc]     = useState("");
+  const [importSel, setImportSel]     = useState({});
   const undoTimer = useRef(null);
   const saveTimer = useRef(null);
 
   useEffect(() => {
     (async () => {
       try {
-        const { data: row } = await sb.from("budget_data").select("data").eq("user_id", user.id).maybeSingle();
-        setData(row ? row.data : EMPTY_DATA);
-      } catch { setData(EMPTY_DATA); }
+        const res = await sb.from("budget_data").select("data").eq("user_id", user.id).maybeSingle();
+        setData(res.data ? res.data.data : EMPTY_DATA);
+      } catch(e) { setData(EMPTY_DATA); }
     })();
   }, [user.id]);
 
   const showToast = msg => { setToast(msg); setTimeout(()=>setToast(null), 2500); };
 
-  const persist = (d) => {
+  const persist = d => {
     setData(d);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSaving(true);
       try {
-        const { data: existing } = await sb.from("budget_data").select("id").eq("user_id", user.id).maybeSingle();
-        if (existing) {
+        const res = await sb.from("budget_data").select("id").eq("user_id", user.id).maybeSingle();
+        if (res.data) {
           await sb.from("budget_data").update({ data: d, updated_at: new Date().toISOString() }).eq("user_id", user.id);
         } else {
           await sb.from("budget_data").insert({ user_id: user.id, data: d });
@@ -384,7 +401,7 @@ function Budget({ user, onLogout }) {
   };
   const accBalance  = a => isAuto(a) ? a.base + accTxDelta(a.id, data.txs) : a.base;
   const totalWealth = data.accounts.reduce((s,a)=>s+accBalance(a), 0);
-  const accName_    = id => data.accounts.find(a=>a.id===id)?.name;
+  const accNameOf   = id => { const a = data.accounts.find(x=>x.id===id); return a ? a.name : ""; };
 
   const monthTxs = data.txs.filter(t => {
     const d = new Date(t.date+"T12:00:00");
@@ -392,27 +409,29 @@ function Budget({ user, onLogout }) {
   });
 
   const real = {};
-  Object.keys(SECTIONS).forEach(sk => { real[sk]={}; SECTIONS[sk].items.forEach(c=>real[sk][c]=0); });
-  monthTxs.forEach(t => { if(!isTransfer(t) && real[t.sk]?.[t.cat]!==undefined) real[t.sk][t.cat]+=t.amt; });
+  Object.keys(SECTIONS).forEach(sk => { real[sk]={}; SECTIONS[sk].items.forEach(c=>{ real[sk][c]=0; }); });
+  monthTxs.forEach(t => { if(!isTransfer(t) && real[t.sk] && real[t.sk][t.cat]!==undefined) real[t.sk][t.cat]+=t.amt; });
 
-  const bp   = (sk,cat) => data.budgets?.[year]?.[month]?.[sk]?.[cat]||0;
+  const bp = (sk,cat) => {
+    const y = data.budgets[year]; if (!y) return 0;
+    const m = y[month]; if (!m) return 0;
+    const s = m[sk]; if (!s) return 0;
+    return s[cat]||0;
+  };
   const stot = sk => {
     let p=0,r=0;
     SECTIONS[sk].items.forEach(c=>{ const s=iSign(sk,c); p+=s*bp(sk,c); r+=s*real[sk][c]; });
-    return {p,r};
+    return {p:p,r:r};
   };
-  const tR=stot("rendimentos"),tP=stot("poupancas"),tE=stot("essenciais"),tV=stot("variaveis");
+  const tR=stot("rendimentos"), tP=stot("poupancas"), tE=stot("essenciais"), tV=stot("variaveis");
   const saldoR=tR.r-tP.r-tE.r-tV.r, saldoP=tR.p-tP.p-tE.p-tV.p;
   const taxaPoup = tR.r>0 ? tP.r/tR.r*100 : 0;
-  const saldoAcc = (() => {
-    let acc=0;
-    data.txs.forEach(t=>{
-      if(isTransfer(t)) return;
-      const d=new Date(t.date+"T12:00:00"), ty=d.getFullYear(), tm=d.getMonth();
-      if(ty<year||(ty===year&&tm<=month)) acc+=SECTIONS[t.sk].sign*iSign(t.sk,t.cat)*t.amt;
-    });
-    return acc;
-  })();
+  let saldoAcc = 0;
+  data.txs.forEach(t=>{
+    if(isTransfer(t)) return;
+    const d=new Date(t.date+"T12:00:00"), ty=d.getFullYear(), tm=d.getMonth();
+    if(ty<year||(ty===year&&tm<=month)) saldoAcc+=SECTIONS[t.sk].sign*iSign(t.sk,t.cat)*t.amt;
+  });
 
   // ── Actions ──
   const addTx = () => {
@@ -421,31 +440,31 @@ function Budget({ user, onLogout }) {
     if (formSection==="transfer") {
       if (!formAccFrom||!formAccTo) { showToast("⚠️ Escolhe as duas contas"); return; }
       if (formAccFrom===formAccTo)  { showToast("⚠️ As contas têm de ser diferentes"); return; }
-      persist({...data, txs:[...data.txs,{id:uid(),date:formDate,amt,desc:formDesc.trim(),sk:"transfer",cat:"Transferência",accFrom:formAccFrom,accTo:formAccTo}]});
+      persist(Object.assign({}, data, {txs:data.txs.concat([{id:uid(),date:formDate,amt:amt,desc:formDesc.trim(),sk:"transfer",cat:"Transferência",accFrom:formAccFrom,accTo:formAccTo}])}));
       setFormAmount(""); setFormDesc(""); showToast("🔁 Transferência registada"); return;
     }
-    const tx={id:uid(),date:formDate,amt,desc:formDesc.trim(),sk:formSection,cat:formCat};
+    const tx={id:uid(),date:formDate,amt:amt,desc:formDesc.trim(),sk:formSection,cat:formCat};
     if (formSection==="rendimentos") {
-      if (formAccFrom) isDed(formSection,formCat) ? (tx.accFrom=formAccFrom) : (tx.accTo=formAccFrom);
+      if (formAccFrom) { if (isDed(formSection,formCat)) tx.accFrom=formAccFrom; else tx.accTo=formAccFrom; }
     } else if (formSection==="poupancas") {
       if (formAccFrom) tx.accFrom=formAccFrom;
       if (formAccTo)   tx.accTo=formAccTo;
     } else {
       if (formAccFrom) tx.accFrom=formAccFrom;
     }
-    persist({...data, txs:[...data.txs,tx]});
+    persist(Object.assign({}, data, {txs:data.txs.concat([tx])}));
     setFormAmount(""); setFormDesc(""); showToast("✅ Lançamento adicionado");
   };
 
-  const askDelTx  = t => setConfirmDel({type:"tx",  id:t.id, label:t.desc||t.cat, detail:`${fmt(t.amt)} · ${t.date.slice(5).replace("-","/")}` });
+  const askDelTx  = t => setConfirmDel({type:"tx", id:t.id, label:t.desc||t.cat, detail:fmt(t.amt)+" · "+t.date.slice(5).replace("-","/")});
   const askDelAcc = a => {
     const n=data.txs.filter(t=>t.accFrom===a.id||t.accTo===a.id).length;
-    setConfirmDel({type:"acc", id:a.id, label:a.name, detail:n>0?`${n} lançamento${n!==1?"s":""} ligado${n!==1?"s":""} (não serão apagados)`:"Sem lançamentos ligados"});
+    setConfirmDel({type:"acc", id:a.id, label:a.name, detail:n>0?(n+" lançamento(s) ligado(s) — não serão apagados"):"Sem lançamentos ligados"});
   };
   const execDelete = () => {
     const snap = JSON.parse(JSON.stringify(data));
-    if (confirmDel.type==="tx") persist({...data, txs:data.txs.filter(t=>t.id!==confirmDel.id)});
-    else persist({...data, accounts:data.accounts.filter(a=>a.id!==confirmDel.id)});
+    if (confirmDel.type==="tx") persist(Object.assign({}, data, {txs:data.txs.filter(t=>t.id!==confirmDel.id)}));
+    else persist(Object.assign({}, data, {accounts:data.accounts.filter(a=>a.id!==confirmDel.id)}));
     setConfirmDel(null);
     setUndoSnap(snap);
     if (undoTimer.current) clearTimeout(undoTimer.current);
@@ -460,100 +479,197 @@ function Budget({ user, onLogout }) {
 
   const enterEditMode = () => {
     const draft={};
-    Object.keys(SECTIONS).forEach(sk=>SECTIONS[sk].items.forEach(c=>{ const v=bp(sk,c); if(v>0) draft[`${sk}|${c}`]=v.toString(); }));
+    Object.keys(SECTIONS).forEach(sk=>SECTIONS[sk].items.forEach(c=>{ const v=bp(sk,c); if(v>0) draft[sk+"|"+c]=v.toString(); }));
     setBudgetDraft(draft); setEditMode(true);
   };
   const saveBudget = () => {
     const nb=JSON.parse(JSON.stringify(data.budgets||{}));
-    if(!nb[year]) nb[year]={}; if(!nb[year][month]) nb[year][month]={};
-    Object.entries(budgetDraft).forEach(([key,val])=>{
-      const [sk,cat]=key.split("|");
+    if(!nb[year]) nb[year]={};
+    if(!nb[year][month]) nb[year][month]={};
+    Object.keys(budgetDraft).forEach(key=>{
+      const parts=key.split("|"), sk=parts[0], cat=parts[1];
       if(!nb[year][month][sk]) nb[year][month][sk]={};
-      const v=pn(val); if(v>0) nb[year][month][sk][cat]=v; else delete nb[year][month][sk]?.[cat];
+      const v=pn(budgetDraft[key]);
+      if(v>0) nb[year][month][sk][cat]=v;
+      else if (nb[year][month][sk]) delete nb[year][month][sk][cat];
     });
-    persist({...data,budgets:nb}); setBudgetDraft({}); setEditMode(false); showToast("💾 Orçamento guardado");
+    persist(Object.assign({}, data, {budgets:nb}));
+    setBudgetDraft({}); setEditMode(false); showToast("💾 Orçamento guardado");
   };
   const copyPrevMonth = () => {
     const pm=month===0?11:month-1, py=month===0?year-1:year;
-    const prev=data.budgets?.[py]?.[pm];
+    const prevY = data.budgets[py];
+    const prev = prevY ? prevY[pm] : null;
     if(!prev){showToast("⚠️ Sem orçamento no mês anterior");return;}
     const nb=JSON.parse(JSON.stringify(data.budgets||{}));
-    if(!nb[year]) nb[year]={}; nb[year][month]=JSON.parse(JSON.stringify(prev));
-    persist({...data,budgets:nb}); showToast("📋 Copiado com sucesso");
+    if(!nb[year]) nb[year]={};
+    nb[year][month]=JSON.parse(JSON.stringify(prev));
+    persist(Object.assign({}, data, {budgets:nb}));
+    showToast("📋 Copiado com sucesso");
   };
-  const getBD=(sk,cat)=>{ const k=`${sk}|${cat}`; return k in budgetDraft?budgetDraft[k]:(bp(sk,cat)>0?bp(sk,cat).toString():""); };
+  const getBD=(sk,cat)=>{ const k=sk+"|"+cat; return (k in budgetDraft)?budgetDraft[k]:(bp(sk,cat)>0?bp(sk,cat).toString():""); };
 
   const snapshotWealth = (accounts,txs) => {
     const total=accounts.reduce((s,a)=>s+(isAuto(a)?a.base+accTxDelta(a.id,txs):a.base),0);
     const today=todayStr();
-    const hist=[...(data.wealthHist||[])].filter(h=>h.date!==today);
-    hist.push({date:today,total}); hist.sort((a,b)=>a.date.localeCompare(b.date));
+    const hist=(data.wealthHist||[]).filter(h=>h.date!==today);
+    hist.push({date:today,total:total});
+    hist.sort((a,b)=>a.date.localeCompare(b.date));
     return hist;
   };
   const addAccount = () => {
     if(!accName.trim()){showToast("⚠️ Dá um nome à conta");return;}
-    const accounts=[...data.accounts,{id:uid(),name:accName.trim(),type:accType,base:pn(accBal)}];
-    persist({...data,accounts,wealthHist:snapshotWealth(accounts,data.txs)});
+    const accounts=data.accounts.concat([{id:uid(),name:accName.trim(),type:accType,base:pn(accBal)}]);
+    persist(Object.assign({}, data, {accounts:accounts, wealthHist:snapshotWealth(accounts,data.txs)}));
     setAccName(""); setAccBal(""); setAccType("ordem"); setShowAccForm(false); showToast("✅ Conta adicionada");
   };
   const saveAccBalance = id => {
     const target=pn(editBalVal);
-    const accounts=data.accounts.map(a=>{ if(a.id!==id) return a; return isAuto(a)?{...a,base:target-accTxDelta(a.id,data.txs)}:{...a,base:target}; });
-    persist({...data,accounts,wealthHist:snapshotWealth(accounts,data.txs)});
+    const accounts=data.accounts.map(a=>{
+      if(a.id!==id) return a;
+      if(isAuto(a)) return Object.assign({}, a, {base: target - accTxDelta(a.id, data.txs)});
+      return Object.assign({}, a, {base: target});
+    });
+    persist(Object.assign({}, data, {accounts:accounts, wealthHist:snapshotWealth(accounts,data.txs)}));
     setEditingAcc(null); setEditBalVal(""); showToast("💾 Saldo atualizado");
   };
 
   const exportCSV = () => {
     if(data.txs.length===0){showToast("⚠️ Sem dados para exportar");return;}
     const num=v=>v.toFixed(2).replace(".",",");
-    const esc=s=>`"${(s||"").replace(/"/g,'""')}"`;
-    const secLabel=sk=>sk==="transfer"?"Transferência":(SECTIONS[sk]?.label||sk);
+    const esc=s=>'"'+(s||"").replace(/"/g,'""')+'"';
+    const secLabel=sk=>sk==="transfer"?"Transferência":(SECTIONS[sk]?SECTIONS[sk].label:sk);
     let csv="\uFEFF";
-    csv+="Data;Secção;Categoria;Descrição;Valor (€);Sai de;Entra em\n";
-    [...data.txs].sort((a,b)=>a.date.localeCompare(b.date)).forEach(t=>{
-      csv+=[t.date,esc(secLabel(t.sk)),esc(t.cat),esc(t.desc),num(t.amt),esc(accName_(t.accFrom)||""),esc(accName_(t.accTo)||"")].join(";")+"\n";
+    csv+="Data;Tipo;Categoria;Valor;Observações;Sai de;Entra em\n";
+    data.txs.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(t=>{
+      csv+=[t.date,esc(secLabel(t.sk)),esc(t.cat),num(t.amt),esc(t.desc),esc(accNameOf(t.accFrom)),esc(accNameOf(t.accTo))].join(";")+"\n";
     });
     if(data.accounts.length>0){
-      csv+="\n\nContas;Tipo;Saldo (€)\n";
-      data.accounts.forEach(a=>{csv+=[esc(a.name),esc(ACC_TYPES[a.type]?.label||a.type),num(accBalance(a))].join(";")+"\n";});
-      csv+=`Total;;${num(totalWealth)}\n`;
+      csv+="\n\nContas;Tipo;Saldo\n";
+      data.accounts.forEach(a=>{csv+=[esc(a.name),esc(ACC_TYPES[a.type]?ACC_TYPES[a.type].label:a.type),num(accBalance(a))].join(";")+"\n";});
+      csv+="Total;;"+num(totalWealth)+"\n";
     }
     const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
     const url=URL.createObjectURL(blob);
-    const el=document.createElement("a"); el.href=url; el.download=`orcamento_${todayStr()}.csv`;
+    const el=document.createElement("a"); el.href=url; el.download="orcamento_"+todayStr()+".csv";
     document.body.appendChild(el); el.click(); document.body.removeChild(el); URL.revokeObjectURL(url);
     showToast("📤 Exportado!");
   };
 
-  const txDisplay = t => {
-    let accInfo="";
-    if(t.accFrom&&t.accTo) accInfo=`${accName_(t.accFrom)||"?"} → ${accName_(t.accTo)||"?"}`;
-    else if(t.accFrom) accInfo=accName_(t.accFrom)||"";
-    else if(t.accTo)   accInfo=accName_(t.accTo)||"";
-    if(isTransfer(t)) return {bg:TRANSFER.bg,emoji:TRANSFER.emoji,color:TRANSFER.color,sign:"",accInfo};
-    const s=SECTIONS[t.sk], ds=s.sign*iSign(t.sk,t.cat);
-    return {bg:s.bg,emoji:s.emoji,color:ds>0?"#16a34a":"#dc2626",sign:ds>0?"+":"-",accInfo};
+  // ── Importação ──
+  const handleImportFile = (e, mode) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const rows = parseCSV(ev.target.result);
+      if (rows.length===0) { showToast("⚠️ Ficheiro vazio ou formato não reconhecido"); return; }
+      if (mode==="excel") processExcelRows(rows);
+      else processBankRows(rows);
+      setImportMode(mode);
+    };
+    reader.readAsText(file, "UTF-8");
+    e.target.value = "";
   };
 
-  const AccSelect = ({value,onChange,placeholder}) => (
-    <select value={value} onChange={e=>onChange(e.target.value)}
+  const processExcelRows = rows => {
+    const out = [];
+    rows.forEach(r=>{
+      const sk = mapTipo(r["tipo"]||r["seccao"]||"");
+      let cat = r["categoria"]||"Outros";
+      if (SECTIONS[sk].items.indexOf(cat)===-1) cat="Outros";
+      const amt = parseVal(r["valor"]);
+      if (!amt) return;
+      const date = parseDate(r["data"]);
+      const desc = r["observacoes"]||r["descricao"]||r["obs"]||"";
+      const accNm = (r["conta"]||"").toLowerCase();
+      const accObj = data.accounts.find(a=>a.name.toLowerCase()===accNm);
+      const accId = accObj ? accObj.id : "";
+      const dup = data.txs.some(t=>t.date===date&&Math.abs(t.amt-amt)<0.01&&t.cat===cat);
+      const row = {_id:uid(), _dup:dup, sk:sk, cat:cat, amt:amt, date:date, desc:desc};
+      if (accId) { if (sk==="rendimentos"&&!isDed(sk,cat)) row.accTo=accId; else row.accFrom=accId; }
+      out.push(row);
+    });
+    setImportRows(out);
+    const sel={}; out.forEach(r=>{ sel[r._id]=!r._dup; });
+    setImportSel(sel);
+  };
+
+  const processBankRows = rows => {
+    const out = [];
+    rows.forEach(r=>{
+      const desc = r["descricao"]||r["description"]||r["designacao"]||r["movimento"]||r["obs"]||"";
+      const amt = parseVal(r["valor"]||r["montante"]||r["amount"]||r["debito"]||r["credito"]);
+      if (!amt) return;
+      const date = parseDate(r["data"]||r["date"]||r["data mov"]||r["data valor"]);
+      const cls = autoClassify(desc);
+      const dup = data.txs.some(t=>t.date===date&&Math.abs(t.amt-amt)<0.01);
+      out.push({_id:uid(), _dup:dup, sk:cls.sk, cat:cls.cat, amt:amt, date:date, desc:desc});
+    });
+    setImportRows(out);
+    const sel={}; out.forEach(r=>{ sel[r._id]=!r._dup; });
+    setImportSel(sel);
+  };
+
+  const updateImportRow = (id, field, val) => {
+    setImportRows(rows=>rows.map(r=>{
+      if (r._id!==id) return r;
+      const nr = Object.assign({}, r); nr[field]=val;
+      if (field==="sk" && SECTIONS[val].items.indexOf(nr.cat)===-1) nr.cat="Outros";
+      return nr;
+    }));
+  };
+
+  const confirmImport = () => {
+    const toImport = importRows.filter(r=>importSel[r._id]);
+    if (!toImport.length) { showToast("⚠️ Nenhuma linha selecionada"); return; }
+    const newTxs = toImport.map(r=>{
+      const tx = {id:r._id, date:r.date, amt:r.amt, desc:r.desc, sk:r.sk, cat:r.cat};
+      if (r.accFrom) tx.accFrom=r.accFrom;
+      if (r.accTo)   tx.accTo=r.accTo;
+      if (importMode==="bank" && importAcc && !tx.accFrom && !tx.accTo) {
+        if (r.sk==="rendimentos"&&!isDed(r.sk,r.cat)) tx.accTo=importAcc; else tx.accFrom=importAcc;
+      }
+      return tx;
+    });
+    persist(Object.assign({}, data, {txs:data.txs.concat(newTxs)}));
+    showToast("✅ "+newTxs.length+" lançamento(s) importado(s)!");
+    setImportRows([]); setImportMode(null); setImportAcc(""); setImportSel({});
+  };
+
+  const nSel = importRows.filter(r=>importSel[r._id]).length;
+  const nDup = importRows.filter(r=>r._dup).length;
+
+  const txDisplay = t => {
+    let accInfo="";
+    if(t.accFrom&&t.accTo) accInfo=(accNameOf(t.accFrom)||"?")+" → "+(accNameOf(t.accTo)||"?");
+    else if(t.accFrom) accInfo=accNameOf(t.accFrom);
+    else if(t.accTo)   accInfo=accNameOf(t.accTo);
+    if(isTransfer(t)) return {bg:TRANSFER.bg, emoji:TRANSFER.emoji, color:TRANSFER.color, sign:"", accInfo:accInfo};
+    const s=SECTIONS[t.sk], ds=s.sign*iSign(t.sk,t.cat);
+    return {bg:s.bg, emoji:s.emoji, color:ds>0?"#16a34a":"#dc2626", sign:ds>0?"+":"-", accInfo:accInfo};
+  };
+
+  const AccSelect = props => (
+    <select value={props.value} onChange={e=>props.onChange(e.target.value)}
       className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none">
-      <option value="">{placeholder}</option>
-      {data.accounts.map(a=><option key={a.id} value={a.id}>{ACC_TYPES[a.type]?.emoji} {a.name}</option>)}
+      <option value="">{props.placeholder}</option>
+      {data.accounts.map(a=><option key={a.id} value={a.id}>{(ACC_TYPES[a.type]?ACC_TYPES[a.type].emoji:"💼")+" "+a.name}</option>)}
     </select>
   );
 
-  const TxRow = ({t, deletable}) => {
-    const d=txDisplay(t);
+  const TxRow = props => {
+    const t = props.t;
+    const d = txDisplay(t);
     return (
       <div className="px-4 py-2.5 border-b border-gray-50 flex items-center gap-3">
         <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-sm" style={{backgroundColor:d.bg}}>{d.emoji}</div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-gray-700 truncate">{t.desc||t.cat}</div>
-          <div className="text-xs text-gray-400 truncate">{isTransfer(t)?"":t.cat+" · "}{d.accInfo?`${d.accInfo} · `:""}{t.date.slice(5).replace("-","/")}</div>
+          <div className="text-xs text-gray-400 truncate">{(isTransfer(t)?"":t.cat+" · ")+(d.accInfo?d.accInfo+" · ":"")+t.date.slice(5).replace("-","/")}</div>
         </div>
-        <div className={`text-sm font-semibold flex-shrink-0 ${deletable?"mr-1":""}`} style={{color:d.color}}>{d.sign}{fmt(t.amt)}</div>
-        {deletable&&<button onClick={()=>askDelTx(t)} className="text-gray-300 hover:text-red-400 text-xl leading-none flex-shrink-0 px-1">×</button>}
+        <div className={"text-sm font-semibold flex-shrink-0"+(props.deletable?" mr-1":"")} style={{color:d.color}}>{d.sign}{fmt(t.amt)}</div>
+        {props.deletable ? <button onClick={()=>askDelTx(t)} className="text-gray-300 hover:text-red-400 text-xl leading-none flex-shrink-0 px-1">×</button> : null}
       </div>
     );
   };
@@ -561,16 +677,16 @@ function Budget({ user, onLogout }) {
   return (
     <div className="min-h-screen bg-gray-50" style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"}}>
 
-      {toast&&<div className="fixed top-4 left-1/2 z-50 bg-gray-800 text-white text-xs px-4 py-2 rounded-full shadow-lg" style={{transform:"translateX(-50%)"}}>{toast}</div>}
+      {toast ? <div className="fixed top-4 left-1/2 z-50 bg-gray-800 text-white text-xs px-4 py-2 rounded-full shadow-lg" style={{transform:"translateX(-50%)"}}>{toast}</div> : null}
 
-      {undoSnap&&(
+      {undoSnap ? (
         <div className="fixed bottom-20 left-1/2 z-50 bg-gray-800 text-white text-xs pl-4 pr-2 py-2 rounded-full shadow-lg flex items-center gap-3" style={{transform:"translateX(-50%)"}}>
           <span>🗑️ Eliminado</span>
           <button onClick={undo} className="bg-white text-gray-800 font-semibold rounded-full px-3 py-1 text-xs">↩️ Anular</button>
         </div>
-      )}
+      ) : null}
 
-      {confirmDel&&(
+      {confirmDel ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{backgroundColor:"rgba(0,0,0,0.4)"}} onClick={()=>setConfirmDel(null)}>
           <div className="bg-white rounded-2xl shadow-xl p-5 w-full max-w-sm" onClick={e=>e.stopPropagation()}>
             <div className="text-2xl mb-2">{confirmDel.type==="acc"?"💼":"🗑️"}</div>
@@ -582,9 +698,9 @@ function Budget({ user, onLogout }) {
             </div>
           </div>
         </div>
-      )}
+      ) : null}
 
-      {showMenu&&(
+      {showMenu ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center px-4 pb-24" style={{backgroundColor:"rgba(0,0,0,0.3)"}} onClick={()=>setShowMenu(false)}>
           <div className="bg-white rounded-2xl shadow-xl p-4 w-full max-w-sm" onClick={e=>e.stopPropagation()}>
             <div className="text-xs text-gray-400 mb-3 text-center truncate">{user.email}</div>
@@ -596,50 +712,50 @@ function Budget({ user, onLogout }) {
             </button>
           </div>
         </div>
-      )}
+      ) : null}
 
       <header className="bg-white shadow-sm sticky top-0 z-10">
         <div className="max-w-xl mx-auto px-4 py-3 flex items-center justify-between">
           <h1 className="text-base font-bold text-gray-900">💰 Orçamento Pessoal</h1>
           <div className="flex items-center gap-2">
-            {saving&&<span className="text-xs text-gray-300">A guardar…</span>}
-            {tab!=="contas"&&(
+            {saving ? <span className="text-xs text-gray-300">A guardar…</span> : null}
+            {tab!=="contas"&&tab!=="importar" ? (
               <div className="flex items-center gap-1">
                 <button onClick={()=>setYear(y=>y-1)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500">‹</button>
                 <span className="text-sm font-semibold w-10 text-center text-gray-700">{year}</span>
                 <button onClick={()=>setYear(y=>y+1)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500">›</button>
               </div>
-            )}
+            ) : null}
             <button onClick={()=>setShowMenu(v=>!v)} className="w-8 h-8 flex items-center justify-center rounded-full bg-blue-100 text-blue-600 text-xs font-bold ml-1">
               {user.email[0].toUpperCase()}
             </button>
           </div>
         </div>
-        {tab!=="contas"&&(
+        {tab!=="contas"&&tab!=="importar" ? (
           <div className="overflow-x-auto">
             <div className="flex gap-1 px-4 pb-2 max-w-xl mx-auto" style={{minWidth:"max-content"}}>
               {MS.map((m,i)=>(
                 <button key={i} onClick={()=>{setMonth(i);setEditMode(false);}}
-                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${month===i?"text-white":"bg-gray-100 text-gray-600"}`}
+                  className={"px-3 py-1 rounded-full text-xs font-medium transition-colors "+(month===i?"text-white":"bg-gray-100 text-gray-600")}
                   style={month===i?{backgroundColor:"#2563eb"}:{}}>{m}</button>
               ))}
             </div>
           </div>
-        )}
+        ) : null}
       </header>
 
       <main className="max-w-xl mx-auto px-4 py-4 pb-24">
 
-        {tab==="resumo"&&(
+        {tab==="resumo" ? (
           <div className="space-y-4">
             <div className="bg-white rounded-2xl p-4 shadow-sm">
               <div className="text-xs text-gray-400 mb-1">{MS[month]} {year} — Saldo do Mês</div>
-              <div className={`text-3xl font-bold ${saldoR>=0?"text-green-600":"text-red-500"}`}>{fmt(saldoR)}</div>
+              <div className={"text-3xl font-bold "+(saldoR>=0?"text-green-600":"text-red-500")}>{fmt(saldoR)}</div>
               <div className="text-xs text-gray-400 mt-0.5">Previsto: {fmt(saldoP)}</div>
               <div className="mt-3 pt-3 border-t border-gray-100 flex gap-6 flex-wrap">
                 <div><div className="text-xs text-gray-400">Taxa Poupança</div><div className="text-sm font-bold text-blue-600">{taxaPoup.toFixed(0)}%</div></div>
-                <div><div className="text-xs text-gray-400">Saldo Acumulado</div><div className={`text-sm font-bold ${saldoAcc>=0?"text-green-600":"text-red-500"}`}>{fmt(saldoAcc)}</div></div>
-                {data.accounts.length>0&&<div><div className="text-xs text-gray-400">Património</div><div className="text-sm font-bold text-violet-600">{fmt(totalWealth)}</div></div>}
+                <div><div className="text-xs text-gray-400">Saldo Acumulado</div><div className={"text-sm font-bold "+(saldoAcc>=0?"text-green-600":"text-red-500")}>{fmt(saldoAcc)}</div></div>
+                {data.accounts.length>0 ? <div><div className="text-xs text-gray-400">Património</div><div className="text-sm font-bold text-violet-600">{fmt(totalWealth)}</div></div> : null}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -651,7 +767,7 @@ function Budget({ user, onLogout }) {
                     <div className="text-xs text-gray-400 mb-1">{c.label}</div>
                     <div className="text-lg font-bold" style={{color:c.color}}>{fmt(c.tot.r)}</div>
                     <div className="text-xs text-gray-300">Prev: {fmt(c.tot.p)}</div>
-                    {c.tot.p>0&&diff>0.005&&<div className={`text-xs mt-1 font-medium ${over?"text-red-500":"text-green-600"}`}>{over?"▲ ":"▼ "}{fmt(diff)}</div>}
+                    {c.tot.p>0&&diff>0.005 ? <div className={"text-xs mt-1 font-medium "+(over?"text-red-500":"text-green-600")}>{(over?"▲ ":"▼ ")+fmt(diff)}</div> : null}
                   </div>
                 );
               })}
@@ -662,98 +778,108 @@ function Budget({ user, onLogout }) {
                 <button onClick={()=>setTab("lancar")} className="text-xs text-blue-600">Ver todos →</button>
               </div>
               {monthTxs.length===0
-                ?<div className="px-4 py-6 text-center text-xs text-gray-400">Sem lançamentos em {MS[month]}<br/><span className="text-gray-300">Vai a ➕ Lançar para começar</span></div>
-                :[...monthTxs].reverse().slice(0,5).map(t=><TxRow key={t.id} t={t}/>)}
+                ? <div className="px-4 py-6 text-center text-xs text-gray-400">Sem lançamentos em {MS[month]}<br/><span className="text-gray-300">Vai a ➕ Lançar para começar</span></div>
+                : monthTxs.slice().reverse().slice(0,5).map(t=><TxRow key={t.id} t={t}/>)}
             </div>
           </div>
-        )}
+        ) : null}
 
-        {tab==="lancar"&&(
+        {tab==="lancar" ? (
           <div className="space-y-4">
             <div className="bg-white rounded-2xl shadow-sm p-4">
               <h2 className="font-semibold text-sm text-gray-800 mb-4">Novo Lançamento — {MS[month]} {year}</h2>
               <div className="mb-3">
                 <div className="text-xs text-gray-400 mb-1.5">Secção</div>
                 <div className="grid grid-cols-2 gap-2">
-                  {Object.entries(SECTIONS).map(([sk,s])=>(
-                    <button key={sk} onClick={()=>{setFormSection(sk);setFormCat(s.items[0]);setFormAccFrom("");setFormAccTo("");}}
-                      className="text-xs py-2 px-2 rounded-lg border font-medium text-left"
-                      style={formSection===sk?{backgroundColor:s.color,borderColor:s.color,color:"white"}:{backgroundColor:"white",borderColor:"#e5e7eb",color:"#374151"}}>
-                      {s.emoji} {s.label}
-                    </button>
-                  ))}
-                  {data.accounts.length>1&&(
+                  {Object.keys(SECTIONS).map(sk=>{
+                    const s = SECTIONS[sk];
+                    return (
+                      <button key={sk} onClick={()=>{setFormSection(sk);setFormCat(s.items[0]);setFormAccFrom("");setFormAccTo("");}}
+                        className="text-xs py-2 px-2 rounded-lg border font-medium text-left"
+                        style={formSection===sk?{backgroundColor:s.color,borderColor:s.color,color:"white"}:{backgroundColor:"white",borderColor:"#e5e7eb",color:"#374151"}}>
+                        {s.emoji} {s.label}
+                      </button>
+                    );
+                  })}
+                  {data.accounts.length>1 ? (
                     <button onClick={()=>{setFormSection("transfer");setFormAccFrom("");setFormAccTo("");}}
                       className="text-xs py-2 px-2 rounded-lg border font-medium text-left col-span-2"
                       style={formSection==="transfer"?{backgroundColor:TRANSFER.color,borderColor:TRANSFER.color,color:"white"}:{backgroundColor:"white",borderColor:"#e5e7eb",color:"#374151"}}>
                       {TRANSFER.emoji} Transferência entre contas
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
-              {formSection==="transfer"?(
-                <>
+              {formSection==="transfer" ? (
+                <div>
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div><div className="text-xs text-gray-400 mb-1.5">Sai de</div><AccSelect value={formAccFrom} onChange={setFormAccFrom} placeholder="— conta —"/></div>
                     <div><div className="text-xs text-gray-400 mb-1.5">Entra em</div><AccSelect value={formAccTo} onChange={setFormAccTo} placeholder="— conta —"/></div>
                   </div>
                   <div className="mb-3 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-600">🔁 Não conta como despesa nem rendimento.</div>
-                </>
-              ):(
-                <>
+                </div>
+              ) : (
+                <div>
                   <div className="mb-3">
                     <div className="text-xs text-gray-400 mb-1.5">Categoria</div>
                     <select value={formCat} onChange={e=>setFormCat(e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none">
-                      {SECTIONS[formSection].items.map(c=><option key={c} value={c}>{c}{isDed(formSection,c)?" (desconto)":""}</option>)}
+                      {SECTIONS[formSection].items.map(c=><option key={c} value={c}>{c+(isDed(formSection,c)?" (desconto)":"")}</option>)}
                     </select>
                   </div>
-                  {data.accounts.length>0&&(formSection==="poupancas"?(
-                    <div className="grid grid-cols-2 gap-3 mb-3">
-                      <div><div className="text-xs text-gray-400 mb-1.5">Sai de</div><AccSelect value={formAccFrom} onChange={setFormAccFrom} placeholder="— conta —"/></div>
-                      <div><div className="text-xs text-gray-400 mb-1.5">Entra em</div><AccSelect value={formAccTo} onChange={setFormAccTo} placeholder="— conta —"/></div>
-                    </div>
-                  ):(
-                    <div className="mb-3">
-                      <div className="text-xs text-gray-400 mb-1.5">{formSection==="rendimentos"?(isDed(formSection,formCat)?"Sai da conta":"Entra na conta"):"Sai da conta"} (opcional)</div>
-                      <AccSelect value={formAccFrom} onChange={setFormAccFrom} placeholder="— sem conta —"/>
-                    </div>
-                  ))}
-                  {isDed(formSection,formCat)&&<div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-700">⚠️ <strong>{formCat}</strong> é um desconto — será subtraído ao rendimento.</div>}
-                </>
+                  {data.accounts.length>0 ? (
+                    formSection==="poupancas" ? (
+                      <div className="grid grid-cols-2 gap-3 mb-3">
+                        <div><div className="text-xs text-gray-400 mb-1.5">Sai de</div><AccSelect value={formAccFrom} onChange={setFormAccFrom} placeholder="— conta —"/></div>
+                        <div><div className="text-xs text-gray-400 mb-1.5">Entra em</div><AccSelect value={formAccTo} onChange={setFormAccTo} placeholder="— conta —"/></div>
+                      </div>
+                    ) : (
+                      <div className="mb-3">
+                        <div className="text-xs text-gray-400 mb-1.5">{(formSection==="rendimentos"?(isDed(formSection,formCat)?"Sai da conta":"Entra na conta"):"Sai da conta")+" (opcional)"}</div>
+                        <AccSelect value={formAccFrom} onChange={setFormAccFrom} placeholder="— sem conta —"/>
+                      </div>
+                    )
+                  ) : null}
+                  {isDed(formSection,formCat) ? <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-700">⚠️ <strong>{formCat}</strong> é um desconto — será subtraído ao rendimento.</div> : null}
+                </div>
               )}
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <div><div className="text-xs text-gray-400 mb-1.5">Valor (€)</div>
-                  <input type="text" inputMode="decimal" value={formAmount} onChange={e=>setFormAmount(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addTx()} placeholder="0,00" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
+                  <input type="text" inputMode="decimal" value={formAmount} onChange={e=>setFormAmount(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addTx();}} placeholder="0,00" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
                 <div><div className="text-xs text-gray-400 mb-1.5">Data</div>
                   <input type="date" value={formDate} onChange={e=>setFormDate(e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
               </div>
               <div className="mb-3"><div className="text-xs text-gray-400 mb-1.5">Descrição (opcional)</div>
-                <input type="text" value={formDesc} onChange={e=>setFormDesc(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addTx()} placeholder={formSection==="transfer"?"ex: reforço poupança":"ex: Pingo Doce"} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
+                <input type="text" value={formDesc} onChange={e=>setFormDesc(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addTx();}} placeholder={formSection==="transfer"?"ex: reforço poupança":"ex: Pingo Doce"} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
               <button onClick={addTx} className="w-full text-white rounded-xl py-3 font-semibold text-sm" style={{backgroundColor:formSection==="transfer"?TRANSFER.color:"#2563eb"}}>
                 {formSection==="transfer"?"🔁 Registar Transferência":"➕ Adicionar Lançamento"}
               </button>
             </div>
-            {monthTxs.length>0&&(
+            {monthTxs.length>0 ? (
               <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
                 <div className="px-4 py-3 font-semibold text-sm text-gray-700 border-b border-gray-100">{MS[month]} {year} — {monthTxs.length} lançamento{monthTxs.length!==1?"s":""}</div>
-                {[...monthTxs].reverse().map(t=><TxRow key={t.id} t={t} deletable/>)}
+                {monthTxs.slice().reverse().map(t=><TxRow key={t.id} t={t} deletable={true}/>)}
               </div>
-            )}
+            ) : null}
           </div>
-        )}
+        ) : null}
 
-        {tab==="detalhe"&&(
+        {tab==="detalhe" ? (
           <div className="space-y-3">
             <div className="flex gap-2">
-              {!editMode?(
-                <><button onClick={enterEditMode} className="flex-1 bg-white border border-gray-200 rounded-xl py-2.5 text-xs font-medium text-gray-700">✏️ Editar Previsto</button>
-                <button onClick={copyPrevMonth} className="flex-1 bg-white border border-gray-200 rounded-xl py-2.5 text-xs font-medium text-gray-700">📋 Copiar mês anterior</button></>
-              ):(
-                <><button onClick={saveBudget} className="flex-1 text-white rounded-xl py-2.5 text-sm font-semibold" style={{backgroundColor:"#2563eb"}}>💾 Guardar</button>
-                <button onClick={()=>{setEditMode(false);setBudgetDraft({})}} className="bg-white border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-600">✕</button></>
+              {!editMode ? (
+                <React.Fragment>
+                  <button onClick={enterEditMode} className="flex-1 bg-white border border-gray-200 rounded-xl py-2.5 text-xs font-medium text-gray-700">✏️ Editar Previsto</button>
+                  <button onClick={copyPrevMonth} className="flex-1 bg-white border border-gray-200 rounded-xl py-2.5 text-xs font-medium text-gray-700">📋 Copiar mês anterior</button>
+                </React.Fragment>
+              ) : (
+                <React.Fragment>
+                  <button onClick={saveBudget} className="flex-1 text-white rounded-xl py-2.5 text-sm font-semibold" style={{backgroundColor:"#2563eb"}}>💾 Guardar</button>
+                  <button onClick={()=>{setEditMode(false);setBudgetDraft({});}} className="bg-white border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-600">✕</button>
+                </React.Fragment>
               )}
             </div>
-            {Object.entries(SECTIONS).map(([sk,s])=>{
+            {Object.keys(SECTIONS).map(sk=>{
+              const s = SECTIONS[sk];
               const tot=stot(sk);
               const rows=editMode?s.items:s.items.filter(c=>bp(sk,c)>0||real[sk][c]>0);
               if(!editMode&&rows.length===0) return null;
@@ -761,18 +887,27 @@ function Budget({ user, onLogout }) {
                 <div key={sk} className="bg-white rounded-2xl shadow-sm overflow-hidden">
                   <div className="px-4 py-2.5 flex items-center justify-between" style={{backgroundColor:s.bg}}>
                     <div className="font-semibold text-sm flex items-center gap-1.5" style={{color:s.text}}><span>{s.emoji}</span><span>{s.label}</span></div>
-                    <div className="text-right"><div className="text-sm font-bold" style={{color:s.color}}>{fmt(tot.r)}</div>{tot.p!==0&&<div className="text-xs text-gray-400">Prev: {fmt(tot.p)}</div>}</div>
+                    <div className="text-right"><div className="text-sm font-bold" style={{color:s.color}}>{fmt(tot.r)}</div>{tot.p!==0?<div className="text-xs text-gray-400">Prev: {fmt(tot.p)}</div>:null}</div>
                   </div>
                   <div className="grid px-4 py-1 bg-gray-50 border-b border-gray-100" style={{gridTemplateColumns:COL}}>
                     <div className="text-xs text-gray-400">Categoria</div><div className="text-xs text-gray-400 text-right">Previsto</div><div className="text-xs text-gray-400 text-right">Realizado</div>
                   </div>
-                  {(editMode?s.items:rows).map(c=>{
-                    const ded=isDed(sk,c),prev=bp(sk,c),rl=real[sk][c],ps=ded?-prev:prev,rs=ded?-rl:rl,dev=rs-ps,isOver=(s.sign<0||ded)&&dev>0&&prev>0;
+                  {rows.map(c=>{
+                    const ded=isDed(sk,c), prev=bp(sk,c), rl=real[sk][c];
+                    const ps=ded?-prev:prev, rs=ded?-rl:rl, dev=rs-ps;
+                    const isOver=(s.sign<0||ded)&&dev>0&&prev>0;
                     return (
                       <div key={c} className="grid px-4 py-2 border-b border-gray-50 items-center" style={{gridTemplateColumns:COL}}>
-                        <div className="text-xs pr-1 leading-tight" style={{color:ded?"#b45309":"#374151"}}>{ded&&<span className="text-amber-500 mr-1">↓</span>}{c}</div>
-                        <div className="text-right">{editMode?(<input type="text" inputMode="decimal" value={getBD(sk,c)} onChange={e=>setBudgetDraft(b=>({...b,[`${sk}|${c}`]:e.target.value}))} placeholder="0" className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:border-blue-400 outline-none"/>):(<span className="text-xs text-gray-400">{prev>0?(ded?"-":"")+fmt(prev):"—"}</span>)}</div>
-                        <div className="text-right"><div className="text-xs font-medium" style={{color:rl>0?(ded?"#dc2626":s.color):"#d1d5db"}}>{rl>0?(ded?"-":"")+fmt(rl):"—"}</div>{prev>0&&rl>0&&<div className={`text-xs ${isOver?"text-red-500":"text-green-600"}`}>{isOver?"▲":"▼"} {fmt(Math.abs(dev))}</div>}</div>
+                        <div className="text-xs pr-1 leading-tight" style={{color:ded?"#b45309":"#374151"}}>{ded?<span className="text-amber-500 mr-1">↓</span>:null}{c}</div>
+                        <div className="text-right">
+                          {editMode
+                            ? <input type="text" inputMode="decimal" value={getBD(sk,c)} onChange={e=>setBudgetDraft(b=>Object.assign({},b,{[sk+"|"+c]:e.target.value}))} placeholder="0" className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:border-blue-400 outline-none"/>
+                            : <span className="text-xs text-gray-400">{prev>0?(ded?"-":"")+fmt(prev):"—"}</span>}
+                        </div>
+                        <div className="text-right">
+                          <div className="text-xs font-medium" style={{color:rl>0?(ded?"#dc2626":s.color):"#d1d5db"}}>{rl>0?(ded?"-":"")+fmt(rl):"—"}</div>
+                          {prev>0&&rl>0?<div className={"text-xs "+(isOver?"text-red-500":"text-green-600")}>{(isOver?"▲":"▼")+" "+fmt(Math.abs(dev))}</div>:null}
+                        </div>
                       </div>
                     );
                   })}
@@ -788,67 +923,72 @@ function Budget({ user, onLogout }) {
                 <div key={row.label} className="grid px-4 py-2.5 border-b border-gray-50 items-center" style={{gridTemplateColumns:COL}}>
                   <div className="text-xs font-medium text-gray-700">{row.label}</div>
                   <div className="text-xs text-gray-400 text-right">{row.p!=null?fmt(row.p):"—"}</div>
-                  <div className={`text-xs font-bold text-right ${row.r>=0?"text-green-600":"text-red-500"}`}>{row.pct?`${row.r.toFixed(0)}%`:fmt(row.r)}</div>
+                  <div className={"text-xs font-bold text-right "+(row.r>=0?"text-green-600":"text-red-500")}>{row.pct?row.r.toFixed(0)+"%":fmt(row.r)}</div>
                 </div>
               ))}
             </div>
           </div>
-        )}
+        ) : null}
 
-        {tab==="contas"&&(
+        {tab==="contas" ? (
           <div className="space-y-4">
             <div className="rounded-2xl p-4 shadow-sm text-white" style={{background:"linear-gradient(135deg,#7c3aed,#2563eb)"}}>
               <div className="text-xs opacity-80 mb-1">💎 Património Total</div>
               <div className="text-3xl font-bold">{fmt(totalWealth)}</div>
               <div className="text-xs opacity-80 mt-1">{data.accounts.length} conta{data.accounts.length!==1?"s":""}</div>
             </div>
-            {data.wealthHist.length>1&&(
+            {data.wealthHist.length>1 ? (
               <div className="bg-white rounded-2xl shadow-sm p-4">
                 <h3 className="font-semibold text-sm text-gray-700 mb-3">Evolução do Património</h3>
-                <SimpleLine data={data.wealthHist.map(h=>({...h,label:h.date.slice(5).replace("-","/")}))}/>
+                <SimpleLine data={data.wealthHist.map(h=>({date:h.date,total:h.total,label:h.date.slice(5).replace("-","/")}))}/>
               </div>
-            )}
+            ) : null}
             <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
               <div className="px-4 py-3 flex justify-between items-center border-b border-gray-100">
                 <div className="font-semibold text-sm text-gray-700">As minhas contas</div>
                 <button onClick={()=>setShowAccForm(v=>!v)} className="text-xs text-blue-600 font-medium">{showAccForm?"✕ Fechar":"+ Nova conta"}</button>
               </div>
-              {showAccForm&&(
+              {showAccForm ? (
                 <div className="px-4 py-3 bg-blue-50 border-b border-blue-100 space-y-2.5">
                   <input type="text" value={accName} onChange={e=>setAccName(e.target.value)} placeholder="Nome da conta (ex: CGD à ordem)" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none"/>
                   <div className="grid grid-cols-4 gap-1.5">
-                    {Object.entries(ACC_TYPES).map(([tk,t])=>(
-                      <button key={tk} onClick={()=>setAccType(tk)} className="text-xs py-1.5 px-1 rounded-lg border font-medium"
-                        style={accType===tk?{backgroundColor:t.color,borderColor:t.color,color:"white"}:{backgroundColor:"white",borderColor:"#e5e7eb",color:"#374151"}}>
-                        {t.emoji} {t.label}
-                      </button>
-                    ))}
+                    {Object.keys(ACC_TYPES).map(tk=>{
+                      const t = ACC_TYPES[tk];
+                      return (
+                        <button key={tk} onClick={()=>setAccType(tk)} className="text-xs py-1.5 px-1 rounded-lg border font-medium"
+                          style={accType===tk?{backgroundColor:t.color,borderColor:t.color,color:"white"}:{backgroundColor:"white",borderColor:"#e5e7eb",color:"#374151"}}>
+                          {t.emoji} {t.label}
+                        </button>
+                      );
+                    })}
                   </div>
                   <div className="text-xs text-gray-500">{ACC_TYPES[accType].auto?"🔄 Saldo automático — atualiza com os lançamentos":"✋ Saldo manual — ideal para investimentos"}</div>
                   <div className="flex gap-2">
-                    <input type="text" inputMode="decimal" value={accBal} onChange={e=>setAccBal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addAccount()} placeholder="Saldo atual (€)" className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none"/>
+                    <input type="text" inputMode="decimal" value={accBal} onChange={e=>setAccBal(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addAccount();}} placeholder="Saldo atual (€)" className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none"/>
                     <button onClick={addAccount} className="text-white rounded-lg px-4 py-2 text-sm font-semibold" style={{backgroundColor:"#2563eb"}}>Criar</button>
                   </div>
                 </div>
-              )}
-              {data.accounts.length===0&&!showAccForm&&<div className="px-4 py-8 text-center text-xs text-gray-400">Ainda não tens contas<br/><span className="text-gray-300">Adiciona para ver o teu património total</span></div>}
+              ) : null}
+              {data.accounts.length===0&&!showAccForm ? <div className="px-4 py-8 text-center text-xs text-gray-400">Ainda não tens contas<br/><span className="text-gray-300">Adiciona para ver o teu património total</span></div> : null}
               {data.accounts.map(a=>{
-                const t=ACC_TYPES[a.type]||ACC_TYPES.outro, bal=accBalance(a), pct=totalWealth>0?Math.max(0,bal)/totalWealth*100:0;
+                const t=ACC_TYPES[a.type]||ACC_TYPES.outro;
+                const bal=accBalance(a);
+                const pct=totalWealth>0?Math.max(0,bal)/totalWealth*100:0;
                 return (
                   <div key={a.id} className="px-4 py-3 border-b border-gray-50">
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 text-base" style={{backgroundColor:t.color+"18"}}>{t.emoji}</div>
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium text-gray-700 truncate">{a.name}</div>
-                        <div className="text-xs text-gray-400">{t.label} · {isAuto(a)?"🔄":"✋"} · {pct.toFixed(0)}%</div>
+                        <div className="text-xs text-gray-400">{t.label+" · "+(isAuto(a)?"🔄":"✋")+" · "+pct.toFixed(0)+"%"}</div>
                       </div>
-                      {editingAcc===a.id?(
+                      {editingAcc===a.id ? (
                         <div className="flex gap-1.5 items-center">
-                          <input type="text" inputMode="decimal" value={editBalVal} onChange={e=>setEditBalVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveAccBalance(a.id)} autoFocus className="w-24 text-right border border-blue-300 rounded-lg px-2 py-1.5 text-sm focus:border-blue-500 outline-none"/>
+                          <input type="text" inputMode="decimal" value={editBalVal} onChange={e=>setEditBalVal(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveAccBalance(a.id);}} autoFocus className="w-24 text-right border border-blue-300 rounded-lg px-2 py-1.5 text-sm focus:border-blue-500 outline-none"/>
                           <button onClick={()=>saveAccBalance(a.id)} className="text-white rounded-lg px-2.5 py-1.5 text-xs font-semibold" style={{backgroundColor:"#2563eb"}}>✓</button>
                           <button onClick={()=>{setEditingAcc(null);setEditBalVal("");}} className="text-gray-400 px-1">✕</button>
                         </div>
-                      ):(
+                      ) : (
                         <div className="flex items-center gap-2">
                           <div className="text-sm font-bold" style={{color:t.color}}>{fmt(bal)}</div>
                           <button onClick={()=>{setEditingAcc(a.id);setEditBalVal(bal.toString());}} className="text-gray-300 hover:text-blue-500">✏️</button>
@@ -856,15 +996,16 @@ function Budget({ user, onLogout }) {
                         </div>
                       )}
                     </div>
-                    {totalWealth>0&&<div className="mt-2 bg-gray-100 rounded-full h-1"><div className="h-1 rounded-full" style={{width:`${pct}%`,backgroundColor:t.color}}/></div>}
+                    {totalWealth>0 ? <div className="mt-2 bg-gray-100 rounded-full h-1"><div className="h-1 rounded-full" style={{width:pct+"%",backgroundColor:t.color}}/></div> : null}
                   </div>
                 );
               })}
             </div>
-            {data.accounts.length>1&&(()=>{
+            {(()=>{
+              if (data.accounts.length<2) return null;
               const byType={};
-              data.accounts.forEach(a=>{const b=accBalance(a);byType[a.type]=(byType[a.type]||0)+b;});
-              const pieData=Object.entries(byType).filter(([,v])=>v>0).map(([tk,v])=>({name:ACC_TYPES[tk].label,value:v,color:ACC_TYPES[tk].color}));
+              data.accounts.forEach(a=>{ const b=accBalance(a); byType[a.type]=(byType[a.type]||0)+b; });
+              const pieData=Object.keys(byType).filter(tk=>byType[tk]>0).map(tk=>({name:ACC_TYPES[tk].label,value:byType[tk],color:ACC_TYPES[tk].color}));
               if(pieData.length<2) return null;
               return (
                 <div className="bg-white rounded-2xl shadow-sm p-4">
@@ -877,100 +1018,87 @@ function Budget({ user, onLogout }) {
               💡 Nas contas 🔄, o saldo atualiza-se com os lançamentos. Se não bater certo com o banco, edita (✏️) — a app acerta. Nas contas ✋, atualizas tu.
             </div>
           </div>
-        )}
+        ) : null}
 
-        {tab==="importar"&&(
+        {tab==="importar" ? (
           <div className="space-y-4">
-            {importRows.length===0?(
-              <>
+            {importRows.length===0 ? (
+              <div className="space-y-4">
                 <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-100">
-                    <div className="font-semibold text-sm text-gray-700 mb-0.5">📊 Importar do Excel antigo</div>
-                    <div className="text-xs text-gray-400">Formato: Tipo, Categoria, Valor, Data, Observações, Conta</div>
+                    <div className="font-semibold text-sm text-gray-700">📊 Importar do Excel antigo</div>
+                    <div className="text-xs text-gray-400 mt-0.5">Colunas: Tipo, Categoria, Valor, Data, Observações, Conta</div>
                   </div>
                   <div className="px-4 py-4">
                     <label className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-blue-200 rounded-xl py-4 text-sm text-blue-600 font-medium cursor-pointer hover:bg-blue-50">
-                      <span>📂 Escolher ficheiro CSV ou Excel</span>
-                      <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={e=>{setImportMode("excel");handleImportFile(e,"excel");}}/>
+                      <span>📂 Escolher ficheiro CSV</span>
+                      <input type="file" accept=".csv,.txt" className="hidden" onChange={e=>handleImportFile(e,"excel")}/>
                     </label>
                     <div className="mt-3 text-xs text-gray-400 text-center">
-                      Exporta o teu Excel como CSV (separado por ; ou ,) e importa aqui
+                      No Excel: Ficheiro → Guardar Como → CSV (separado por ponto e vírgula)
                     </div>
                   </div>
                 </div>
-
                 <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-100">
-                    <div className="font-semibold text-sm text-gray-700 mb-0.5">🏦 Importar extrato bancário</div>
-                    <div className="text-xs text-gray-400">CSV exportado do teu banco — a app classifica automaticamente</div>
+                    <div className="font-semibold text-sm text-gray-700">🏦 Importar extrato bancário</div>
+                    <div className="text-xs text-gray-400 mt-0.5">CSV do banco — classificação automática</div>
                   </div>
                   <div className="px-4 py-4 space-y-3">
-                    {data.accounts.length>0&&(
+                    {data.accounts.length>0 ? (
                       <div>
                         <div className="text-xs text-gray-400 mb-1.5">A que conta pertencem estes movimentos?</div>
-                        <select value={importAcc} onChange={e=>setImportAcc(e.target.value)}
-                          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none">
-                          <option value="">— sem conta —</option>
-                          {data.accounts.map(a=><option key={a.id} value={a.id}>{ACC_TYPES[a.type]?.emoji} {a.name}</option>)}
-                        </select>
+                        <AccSelect value={importAcc} onChange={setImportAcc} placeholder="— sem conta —"/>
                       </div>
-                    )}
+                    ) : null}
                     <label className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-orange-200 rounded-xl py-4 text-sm text-orange-600 font-medium cursor-pointer hover:bg-orange-50">
                       <span>📂 Escolher extrato CSV</span>
-                      <input type="file" accept=".csv,.txt" className="hidden" onChange={e=>{setImportMode("bank");handleImportFile(e,"bank");}}/>
+                      <input type="file" accept=".csv,.txt" className="hidden" onChange={e=>handleImportFile(e,"bank")}/>
                     </label>
                     <div className="bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 text-xs text-amber-700">
-                      💡 A app tenta classificar automaticamente (Pingo Doce → Supermercado, Galp → Combustível, etc.). Podes corrigir antes de importar.
+                      💡 A app classifica automaticamente (Pingo Doce → Supermercado, Galp → Combustível...). Revês tudo antes de importar.
                     </div>
                   </div>
                 </div>
-              </>
-            ):(
+              </div>
+            ) : (
               <div className="space-y-3">
-                {/* Cabeçalho da pré-visualização */}
                 <div className="bg-white rounded-2xl shadow-sm p-4">
                   <div className="flex items-center justify-between mb-1">
-                    <div className="font-semibold text-sm text-gray-800">
-                      Pré-visualização — {importRows.length} linha{importRows.length!==1?"s":""}
-                    </div>
-                    <button onClick={()=>{setImportRows([]);setImportMode(null);}} className="text-xs text-gray-400">✕ Cancelar</button>
+                    <div className="font-semibold text-sm text-gray-800">Pré-visualização — {importRows.length} linha{importRows.length!==1?"s":""}</div>
+                    <button onClick={()=>{setImportRows([]);setImportMode(null);setImportSel({});}} className="text-xs text-gray-400">✕ Cancelar</button>
                   </div>
                   <div className="text-xs text-gray-400">
-                    {importRows.filter(r=>importSel[r._id]).length} selecionada{importRows.filter(r=>importSel[r._id]).length!==1?"s":""} para importar
-                    {importRows.filter(r=>r._dup).length>0&&<span className="text-amber-500 ml-2">· {importRows.filter(r=>r._dup).length} possível{importRows.filter(r=>r._dup).length!==1?"is":""} duplicado{importRows.filter(r=>r._dup).length!==1?"s":""}</span>}
+                    {nSel} selecionada{nSel!==1?"s":""}
+                    {nDup>0 ? <span className="text-amber-500"> · {nDup} possível(is) duplicado(s)</span> : null}
                   </div>
                   <div className="flex gap-2 mt-3">
-                    <button onClick={()=>setImportSel(Object.fromEntries(importRows.map(r=>[r._id,true])))}
+                    <button onClick={()=>{ const s={}; importRows.forEach(r=>{s[r._id]=true;}); setImportSel(s); }}
                       className="text-xs text-blue-600 border border-blue-200 rounded-lg px-3 py-1.5">Selecionar tudo</button>
-                    <button onClick={()=>setImportSel(Object.fromEntries(importRows.map(r=>[r._id,false])))}
-                      className="text-xs text-gray-500 border border-gray-200 rounded-lg px-3 py-1.5">Desselecionar tudo</button>
+                    <button onClick={()=>{ const s={}; importRows.forEach(r=>{s[r._id]=false;}); setImportSel(s); }}
+                      className="text-xs text-gray-500 border border-gray-200 rounded-lg px-3 py-1.5">Limpar seleção</button>
                   </div>
                 </div>
-
-                {/* Linhas */}
                 <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-                  {importRows.map((r,i)=>{
+                  {importRows.map(r=>{
                     const s = SECTIONS[r.sk]||SECTIONS.variaveis;
-                    const sel = importSel[r._id];
+                    const sel = !!importSel[r._id];
                     return (
-                      <div key={r._id} className={`px-4 py-3 border-b border-gray-50 ${!sel?"opacity-40":""} ${r._dup?"bg-amber-50":""}`}>
+                      <div key={r._id} className={"px-4 py-3 border-b border-gray-50"+(sel?"":" opacity-40")+(r._dup?" bg-amber-50":"")}>
                         <div className="flex items-start gap-3">
-                          <input type="checkbox" checked={!!sel} onChange={e=>setImportSel(s=>({...s,[r._id]:e.target.checked}))}
-                            className="mt-1 flex-shrink-0"/>
-                          <div className="flex-1 min-w-0 space-y-1.5">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              {r._dup&&<span className="text-xs bg-amber-100 text-amber-700 rounded px-1.5 py-0.5">possível duplicado</span>}
+                          <input type="checkbox" checked={sel} onChange={e=>{ const v=e.target.checked; setImportSel(prev=>Object.assign({},prev,{[r._id]:v})); }} className="mt-1 flex-shrink-0"/>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap mb-1">
+                              {r._dup ? <span className="text-xs bg-amber-100 text-amber-700 rounded px-1.5 py-0.5">possível duplicado</span> : null}
                               <span className="text-xs font-medium text-gray-700">{r.date}</span>
                               <span className="text-xs font-bold" style={{color:s.color}}>{fmt(r.amt)}</span>
                             </div>
-                            {r.desc&&<div className="text-xs text-gray-500 truncate">{r.desc}</div>}
+                            {r.desc ? <div className="text-xs text-gray-500 truncate mb-1.5">{r.desc}</div> : null}
                             <div className="flex gap-2 flex-wrap">
-                              {/* Secção */}
                               <select value={r.sk} onChange={e=>updateImportRow(r._id,"sk",e.target.value)}
                                 className="border border-gray-200 rounded px-2 py-1 text-xs bg-white">
-                                {Object.entries(SECTIONS).map(([sk,s])=><option key={sk} value={sk}>{s.emoji} {s.label}</option>)}
+                                {Object.keys(SECTIONS).map(k=><option key={k} value={k}>{SECTIONS[k].emoji+" "+SECTIONS[k].label}</option>)}
                               </select>
-                              {/* Categoria */}
                               <select value={r.cat} onChange={e=>updateImportRow(r._id,"cat",e.target.value)}
                                 className="border border-gray-200 rounded px-2 py-1 text-xs bg-white">
                                 {(SECTIONS[r.sk]||SECTIONS.variaveis).items.map(c=><option key={c} value={c}>{c}</option>)}
@@ -982,65 +1110,71 @@ function Budget({ user, onLogout }) {
                     );
                   })}
                 </div>
-
-                {/* Botão importar */}
-                <button onClick={confirmImport}
-                  className="w-full text-white rounded-xl py-3 font-semibold text-sm"
-                  style={{backgroundColor:"#2563eb"}}>
-                  📥 Importar {importRows.filter(r=>importSel[r._id]).length} lançamento{importRows.filter(r=>importSel[r._id]).length!==1?"s":""}
+                <button onClick={confirmImport} className="w-full text-white rounded-xl py-3 font-semibold text-sm" style={{backgroundColor:"#2563eb"}}>
+                  📥 Importar {nSel} lançamento{nSel!==1?"s":""}
                 </button>
               </div>
             )}
           </div>
-        )}
+        ) : null}
 
-
+        {tab==="graficos" ? (()=>{
           const pieData=[{name:"Poupanças",value:tP.r,color:"#2563eb"},{name:"Essenciais",value:tE.r,color:"#ea580c"},{name:"Variáveis",value:tV.r,color:"#dc2626"}].filter(d=>d.value>0);
-          const barData=Object.entries(SECTIONS).map(([sk,s])=>{const t=stot(sk);return{name:s.emoji+" "+s.label.split(" ").slice(-1)[0],previsto:+Math.abs(t.p).toFixed(2),realizado:+Math.abs(t.r).toFixed(2)};});
+          const barData=Object.keys(SECTIONS).map(sk=>{
+            const s = SECTIONS[sk], t=stot(sk);
+            const parts = s.label.split(" ");
+            return {name:s.emoji+" "+parts[parts.length-1], previsto:+Math.abs(t.p).toFixed(2), realizado:+Math.abs(t.r).toFixed(2)};
+          });
           const topCats=[];
-          Object.entries(SECTIONS).forEach(([sk,s])=>{if(s.sign<0)s.items.forEach(c=>{const r=real[sk][c];if(r>0)topCats.push({name:c,value:r,color:s.color});});});
+          Object.keys(SECTIONS).forEach(sk=>{
+            const s = SECTIONS[sk];
+            if(s.sign<0) s.items.forEach(c=>{ const r=real[sk][c]; if(r>0) topCats.push({name:c,value:r,color:s.color}); });
+          });
           topCats.sort((a,b)=>b.value-a.value);
           const totalOut=tE.r+tV.r+tP.r;
           return (
             <div className="space-y-4">
-              {pieData.length===0&&topCats.length===0&&<div className="bg-white rounded-2xl shadow-sm p-8 text-center text-gray-400 text-sm">Sem dados para {MS[month]} {year}</div>}
-              {pieData.length>0&&(
+              {pieData.length===0&&topCats.length===0 ? <div className="bg-white rounded-2xl shadow-sm p-8 text-center text-gray-400 text-sm">Sem dados para {MS[month]} {year}</div> : null}
+              {pieData.length>0 ? (
                 <div className="bg-white rounded-2xl shadow-sm p-4">
                   <h3 className="font-semibold text-sm text-gray-700 mb-3">Distribuição de Saídas</h3>
                   <SimplePie data={pieData}/>
                 </div>
-              )}
-              {barData.some(d=>d.previsto>0||d.realizado>0)&&(
+              ) : null}
+              {barData.some(d=>d.previsto>0||d.realizado>0) ? (
                 <div className="bg-white rounded-2xl shadow-sm p-4">
                   <h3 className="font-semibold text-sm text-gray-700 mb-3">Previsto vs Realizado</h3>
                   <SimpleBars data={barData}/>
                 </div>
-              )}
-              {topCats.length>0&&(
+              ) : null}
+              {topCats.length>0 ? (
                 <div className="bg-white rounded-2xl shadow-sm p-4">
                   <h3 className="font-semibold text-sm text-gray-700 mb-3">Top Categorias</h3>
                   <div className="space-y-2.5">
-                    {topCats.slice(0,8).map(c=>{const pct=totalOut>0?c.value/totalOut*100:0;return(
-                      <div key={c.name} className="flex items-center gap-2">
-                        <div className="text-xs text-gray-600 truncate flex-shrink-0" style={{width:120}}>{c.name}</div>
-                        <div className="flex-1 bg-gray-100 rounded-full h-1.5"><div className="h-1.5 rounded-full" style={{width:`${pct}%`,backgroundColor:c.color}}/></div>
-                        <div className="text-xs font-medium text-gray-700 text-right flex-shrink-0" style={{width:70}}>{fmt(c.value)}</div>
-                      </div>
-                    );})}
+                    {topCats.slice(0,8).map(c=>{
+                      const pct=totalOut>0?c.value/totalOut*100:0;
+                      return (
+                        <div key={c.name} className="flex items-center gap-2">
+                          <div className="text-xs text-gray-600 truncate flex-shrink-0" style={{width:120}}>{c.name}</div>
+                          <div className="flex-1 bg-gray-100 rounded-full h-1.5"><div className="h-1.5 rounded-full" style={{width:pct+"%",backgroundColor:c.color}}/></div>
+                          <div className="text-xs font-medium text-gray-700 text-right flex-shrink-0" style={{width:70}}>{fmt(c.value)}</div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
-              )}
+              ) : null}
             </div>
           );
-        })()}
+        })() : null}
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-10">
         <div className="max-w-xl mx-auto flex">
           {[{id:"resumo",icon:"📊",label:"Resumo"},{id:"lancar",icon:"➕",label:"Lançar"},{id:"detalhe",icon:"📋",label:"Detalhe"},{id:"contas",icon:"💼",label:"Contas"},{id:"graficos",icon:"📈",label:"Gráficos"},{id:"importar",icon:"📥",label:"Importar"}].map(n=>(
             <button key={n.id} onClick={()=>setTab(n.id)}
-              className={`flex-1 py-2 flex flex-col items-center gap-0.5 ${tab===n.id?"text-blue-600":"text-gray-400"}`}>
-              <span className="text-xl">{n.icon}</span><span className="text-xs">{n.label}</span>
+              className={"flex-1 py-2 flex flex-col items-center gap-0.5 "+(tab===n.id?"text-blue-600":"text-gray-400")}>
+              <span className="text-lg">{n.icon}</span><span style={{fontSize:10}}>{n.label}</span>
             </button>
           ))}
         </div>
