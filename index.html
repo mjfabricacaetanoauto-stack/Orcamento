@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>💰 Orçamento Pessoal</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.8.0/Recharts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+    body { margin: 0; background: #f9fafb; }
+    ::-webkit-scrollbar { display: none; }
+    input[type=date]::-webkit-calendar-picker-indicator { opacity: 0.5; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+        PieChart, Pie, Cell, Legend, LineChart, Line } = Recharts;
+
+// ── Config Supabase ──────────────────────────────────────────────
+const SUPABASE_URL  = "https://rujdnhnqzjblevwomnvod.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ1amRuaG5xempibGV2d29tdm9kIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExNTk5ODIsImV4cCI6MjA5NjczNTk4Mn0.8QMpBCP1aPR_9q8_yqBwB0J7AnHmnvX0Hrp1CDhni0Q";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+// ── Constantes ───────────────────────────────────────────────────
+const SECTIONS = {
+  rendimentos: { label:"Rendimentos", emoji:"💵", color:"#16a34a", bg:"#f0fdf4", text:"#166534", sign:1,
+    deductions:["Seg. Social","IRS"],
+    items:["Vencimento Base","Subsídio alimentação","Subsídio de férias/natal","Prémios/subsídios adicionais","Outros","Seg. Social","IRS"] },
+  poupancas: { label:"Poupanças / Investimentos", emoji:"🏦", color:"#2563eb", bg:"#eff6ff", text:"#1e40af", sign:-1,
+    items:["Poupança conjunta","Poupança","Férias","Fundo de Emergência","Reforma","Estudos","Casa","Investimento","Outros"] },
+  essenciais: { label:"Despesas Essenciais", emoji:"🏠", color:"#ea580c", bg:"#fff7ed", text:"#9a3412", sign:-1,
+    items:["Electricidade e Gás","Água","Internet","Supermercado","Combustível","Portagens","Seguro - carro","IUC","Telemóvel","Consultas médicas","Farmácia","Seguro - saúde","Estética (cabelo, unhas, etc)","Cabeleireiro","Ginásio","Subscrições","Outros"] },
+  variaveis: { label:"Despesas Variáveis", emoji:"🛍️", color:"#dc2626", bg:"#fef2f2", text:"#991b1b", sign:-1,
+    items:["Fins de semana","Férias/viagens","Prendas/aniversários","Restaurantes","Roupa/sapatos","Cosmética","Livros/Gadgets/Cursos","Estacionamentos","Manutenção Carro","Estudos","Outros"] }
+};
+const TRANSFER  = { label:"Transferência", emoji:"🔁", color:"#64748b", bg:"#f1f5f9" };
+const ACC_TYPES = {
+  ordem:        { label:"À Ordem",      emoji:"💳", color:"#0ea5e9", auto:true },
+  poupanca:     { label:"Poupança",     emoji:"🏦", color:"#2563eb", auto:true },
+  investimento: { label:"Investimento", emoji:"📈", color:"#7c3aed", auto:false },
+  outro:        { label:"Outro",        emoji:"💼", color:"#64748b", auto:true },
+};
+const MS  = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
+const fmt = v => new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR"}).format(v||0);
+const pn  = s => parseFloat((s||"0").toString().replace(",",".")) || 0;
+const todayStr = () => new Date().toISOString().split("T")[0];
+const isDed     = (sk,cat) => SECTIONS[sk]?.deductions?.includes(cat);
+const iSign     = (sk,cat) => isDed(sk,cat) ? -1 : 1;
+const isAuto    = a => ACC_TYPES[a.type]?.auto !== false;
+const isTransfer= t => t.sk === "transfer";
+const COL = "1fr 110px 110px";
+const EMPTY_DATA = { txs:[], budgets:{}, accounts:[], wealthHist:[] };
+
+// ── Auth Screen ──────────────────────────────────────────────────
+function AuthScreen({ onLogin }) {
+  const [email, setEmail]   = useState("");
+  const [pass, setPass]     = useState("");
+  const [mode, setMode]     = useState("login"); // login | register
+  const [loading, setLoading] = useState(false);
+  const [error, setError]   = useState("");
+  const [info, setInfo]     = useState("");
+
+  const submit = async () => {
+    setError(""); setInfo(""); setLoading(true);
+    try {
+      if (mode === "login") {
+        const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
+        if (error) throw error;
+        onLogin(data.user);
+      } else {
+        const { error } = await sb.auth.signUp({ email, password: pass });
+        if (error) throw error;
+        setInfo("Conta criada! Verifica o teu email para confirmar, depois faz login.");
+        setMode("login");
+      }
+    } catch(e) {
+      setError(e.message || "Erro desconhecido");
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4"
+      style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"}}>
+      <div className="bg-white rounded-2xl shadow-sm p-6 w-full max-w-sm">
+        <div className="text-center mb-6">
+          <div className="text-4xl mb-2">💰</div>
+          <h1 className="text-xl font-bold text-gray-900">Orçamento Pessoal</h1>
+          <p className="text-xs text-gray-400 mt-1">{mode==="login"?"Entra na tua conta":"Cria a tua conta"}</p>
+        </div>
+        {error && <div className="mb-3 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{error}</div>}
+        {info  && <div className="mb-3 bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-xs text-green-700">{info}</div>}
+        <div className="space-y-3">
+          <div>
+            <div className="text-xs text-gray-500 mb-1">Email</div>
+            <input type="email" value={email} onChange={e=>setEmail(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&submit()}
+              placeholder="o-teu@email.com"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/>
+          </div>
+          <div>
+            <div className="text-xs text-gray-500 mb-1">Password</div>
+            <input type="password" value={pass} onChange={e=>setPass(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&submit()}
+              placeholder="••••••••"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/>
+          </div>
+          <button onClick={submit} disabled={loading}
+            className="w-full text-white rounded-xl py-3 font-semibold text-sm disabled:opacity-50"
+            style={{backgroundColor:"#2563eb"}}>
+            {loading ? "A processar..." : (mode==="login" ? "Entrar" : "Criar conta")}
+          </button>
+        </div>
+        <div className="text-center mt-4">
+          <button onClick={()=>{setMode(m=>m==="login"?"register":"login");setError("");setInfo("");}}
+            className="text-xs text-blue-600">
+            {mode==="login" ? "Não tens conta? Regista-te" : "Já tens conta? Entra"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── App principal ────────────────────────────────────────────────
+function App() {
+  const [user, setUser]   = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  useEffect(() => {
+    sb.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user || null);
+      setAuthReady(true);
+    });
+    const { data: { subscription } } = sb.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user || null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (!authReady) return (
+    <div className="flex h-screen items-center justify-center bg-gray-50 text-gray-400 text-sm">A carregar...</div>
+  );
+  if (!user) return <AuthScreen onLogin={setUser}/>;
+  return <Budget user={user} onLogout={()=>sb.auth.signOut()}/>;
+}
+
+// ── Budget App ───────────────────────────────────────────────────
+function Budget({ user, onLogout }) {
+  const now = new Date();
+  const [year, setYear]         = useState(now.getFullYear());
+  const [month, setMonth]       = useState(now.getMonth());
+  const [tab, setTab]           = useState("resumo");
+  const [data, setData]         = useState(null);
+  const [saving, setSaving]     = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [budgetDraft, setBudgetDraft] = useState({});
+  const [formDate, setFormDate]     = useState(todayStr());
+  const [formAmount, setFormAmount] = useState("");
+  const [formDesc, setFormDesc]     = useState("");
+  const [formSection, setFormSection] = useState("essenciais");
+  const [formCat, setFormCat]       = useState("Supermercado");
+  const [formAccFrom, setFormAccFrom] = useState("");
+  const [formAccTo, setFormAccTo]     = useState("");
+  const [toast, setToast]           = useState(null);
+  const [accName, setAccName]   = useState("");
+  const [accType, setAccType]   = useState("ordem");
+  const [accBal, setAccBal]     = useState("");
+  const [showAccForm, setShowAccForm] = useState(false);
+  const [editingAcc, setEditingAcc]   = useState(null);
+  const [editBalVal, setEditBalVal]   = useState("");
+  const [confirmDel, setConfirmDel]   = useState(null);
+  const [undoSnap, setUndoSnap]       = useState(null);
+  const [showMenu, setShowMenu]       = useState(false);
+  const undoTimer = useRef(null);
+  const saveTimer = useRef(null);
+
+  // ── Carregar dados do Supabase ──
+  useEffect(() => {
+    (async () => {
+      const { data: rows } = await sb.from("budget_data").select("data").eq("user_id", user.id).single();
+      setData(rows ? rows.data : EMPTY_DATA);
+    })();
+  }, [user.id]);
+
+  const showToast = msg => { setToast(msg); setTimeout(()=>setToast(null), 2500); };
+
+  // ── Guardar com debounce ──
+  const persist = (d) => {
+    setData(d);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      setSaving(true);
+      const { data: existing } = await sb.from("budget_data").select("id").eq("user_id", user.id).single();
+      if (existing) {
+        await sb.from("budget_data").update({ data: d, updated_at: new Date().toISOString() }).eq("user_id", user.id);
+      } else {
+        await sb.from("budget_data").insert({ user_id: user.id, data: d });
+      }
+      setSaving(false);
+    }, 800);
+  };
+
+  if (!data) return (
+    <div className="flex h-screen items-center justify-center bg-gray-50 text-gray-400 text-sm">A carregar dados...</div>
+  );
+
+  // ── Derived ──
+  const accTxDelta = (accId, txs) => {
+    let delta = 0;
+    txs.forEach(t => {
+      if (t.accTo === accId)   delta += t.amt;
+      if (t.accFrom === accId) delta -= t.amt;
+    });
+    return delta;
+  };
+  const accBalance  = a => isAuto(a) ? a.base + accTxDelta(a.id, data.txs) : a.base;
+  const totalWealth = data.accounts.reduce((s,a)=>s+accBalance(a), 0);
+  const accName_    = id => data.accounts.find(a=>a.id===id)?.name;
+
+  const monthTxs = data.txs.filter(t => {
+    const d = new Date(t.date+"T12:00:00");
+    return d.getFullYear()===year && d.getMonth()===month;
+  });
+
+  const real = {};
+  Object.keys(SECTIONS).forEach(sk => { real[sk]={}; SECTIONS[sk].items.forEach(c=>real[sk][c]=0); });
+  monthTxs.forEach(t => { if(!isTransfer(t) && real[t.sk]?.[t.cat]!==undefined) real[t.sk][t.cat]+=t.amt; });
+
+  const bp   = (sk,cat) => data.budgets?.[year]?.[month]?.[sk]?.[cat]||0;
+  const stot = sk => {
+    let p=0,r=0;
+    SECTIONS[sk].items.forEach(c=>{ const s=iSign(sk,c); p+=s*bp(sk,c); r+=s*real[sk][c]; });
+    return {p,r};
+  };
+  const tR=stot("rendimentos"),tP=stot("poupancas"),tE=stot("essenciais"),tV=stot("variaveis");
+  const saldoR=tR.r-tP.r-tE.r-tV.r, saldoP=tR.p-tP.p-tE.p-tV.p;
+  const taxaPoup = tR.r>0 ? tP.r/tR.r*100 : 0;
+  const saldoAcc = (() => {
+    let acc=0;
+    data.txs.forEach(t=>{
+      if(isTransfer(t)) return;
+      const d=new Date(t.date+"T12:00:00"), ty=d.getFullYear(), tm=d.getMonth();
+      if(ty<year||(ty===year&&tm<=month)) acc+=SECTIONS[t.sk].sign*iSign(t.sk,t.cat)*t.amt;
+    });
+    return acc;
+  })();
+
+  // ── Actions ──
+  const addTx = () => {
+    const amt=pn(formAmount);
+    if(!amt) { showToast("⚠️ Insere um valor"); return; }
+    if (formSection==="transfer") {
+      if (!formAccFrom||!formAccTo) { showToast("⚠️ Escolhe as duas contas"); return; }
+      if (formAccFrom===formAccTo)  { showToast("⚠️ As contas têm de ser diferentes"); return; }
+      persist({...data, txs:[...data.txs,{id:uid(),date:formDate,amt,desc:formDesc.trim(),sk:"transfer",cat:"Transferência",accFrom:formAccFrom,accTo:formAccTo}]});
+      setFormAmount(""); setFormDesc(""); showToast("🔁 Transferência registada"); return;
+    }
+    const tx={id:uid(),date:formDate,amt,desc:formDesc.trim(),sk:formSection,cat:formCat};
+    if (formSection==="rendimentos") {
+      if (formAccFrom) isDed(formSection,formCat) ? (tx.accFrom=formAccFrom) : (tx.accTo=formAccFrom);
+    } else if (formSection==="poupancas") {
+      if (formAccFrom) tx.accFrom=formAccFrom;
+      if (formAccTo)   tx.accTo=formAccTo;
+    } else {
+      if (formAccFrom) tx.accFrom=formAccFrom;
+    }
+    persist({...data, txs:[...data.txs,tx]});
+    setFormAmount(""); setFormDesc(""); showToast("✅ Lançamento adicionado");
+  };
+
+  const askDelTx  = t => setConfirmDel({type:"tx",  id:t.id, label:t.desc||t.cat, detail:`${fmt(t.amt)} · ${t.date.slice(5).replace("-","/")}` });
+  const askDelAcc = a => {
+    const n=data.txs.filter(t=>t.accFrom===a.id||t.accTo===a.id).length;
+    setConfirmDel({type:"acc", id:a.id, label:a.name, detail:n>0?`${n} lançamento${n!==1?"s":""} ligado${n!==1?"s":""} (não serão apagados)`:"Sem lançamentos ligados"});
+  };
+  const execDelete = () => {
+    const snap = JSON.parse(JSON.stringify(data));
+    if (confirmDel.type==="tx") persist({...data, txs:data.txs.filter(t=>t.id!==confirmDel.id)});
+    else persist({...data, accounts:data.accounts.filter(a=>a.id!==confirmDel.id)});
+    setConfirmDel(null);
+    setUndoSnap(snap);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    undoTimer.current = setTimeout(()=>setUndoSnap(null), 6000);
+  };
+  const undo = () => {
+    if (!undoSnap) return;
+    persist(undoSnap); setUndoSnap(null);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    showToast("↩️ Recuperado!");
+  };
+
+  const enterEditMode = () => {
+    const draft={};
+    Object.keys(SECTIONS).forEach(sk=>SECTIONS[sk].items.forEach(c=>{ const v=bp(sk,c); if(v>0) draft[`${sk}|${c}`]=v.toString(); }));
+    setBudgetDraft(draft); setEditMode(true);
+  };
+  const saveBudget = () => {
+    const nb=JSON.parse(JSON.stringify(data.budgets||{}));
+    if(!nb[year]) nb[year]={}; if(!nb[year][month]) nb[year][month]={};
+    Object.entries(budgetDraft).forEach(([key,val])=>{
+      const [sk,cat]=key.split("|");
+      if(!nb[year][month][sk]) nb[year][month][sk]={};
+      const v=pn(val); if(v>0) nb[year][month][sk][cat]=v; else delete nb[year][month][sk]?.[cat];
+    });
+    persist({...data,budgets:nb}); setBudgetDraft({}); setEditMode(false); showToast("💾 Orçamento guardado");
+  };
+  const copyPrevMonth = () => {
+    const pm=month===0?11:month-1, py=month===0?year-1:year;
+    const prev=data.budgets?.[py]?.[pm];
+    if(!prev){showToast("⚠️ Sem orçamento no mês anterior");return;}
+    const nb=JSON.parse(JSON.stringify(data.budgets||{}));
+    if(!nb[year]) nb[year]={}; nb[year][month]=JSON.parse(JSON.stringify(prev));
+    persist({...data,budgets:nb}); showToast("📋 Copiado com sucesso");
+  };
+  const getBD=(sk,cat)=>{ const k=`${sk}|${cat}`; return k in budgetDraft?budgetDraft[k]:(bp(sk,cat)>0?bp(sk,cat).toString():""); };
+
+  const snapshotWealth = (accounts,txs) => {
+    const total=accounts.reduce((s,a)=>s+(isAuto(a)?a.base+accTxDelta(a.id,txs):a.base),0);
+    const today=todayStr();
+    const hist=[...(data.wealthHist||[])].filter(h=>h.date!==today);
+    hist.push({date:today,total}); hist.sort((a,b)=>a.date.localeCompare(b.date));
+    return hist;
+  };
+  const addAccount = () => {
+    if(!accName.trim()){showToast("⚠️ Dá um nome à conta");return;}
+    const accounts=[...data.accounts,{id:uid(),name:accName.trim(),type:accType,base:pn(accBal)}];
+    persist({...data,accounts,wealthHist:snapshotWealth(accounts,data.txs)});
+    setAccName(""); setAccBal(""); setAccType("ordem"); setShowAccForm(false); showToast("✅ Conta adicionada");
+  };
+  const saveAccBalance = id => {
+    const target=pn(editBalVal);
+    const accounts=data.accounts.map(a=>{ if(a.id!==id) return a; return isAuto(a)?{...a,base:target-accTxDelta(a.id,data.txs)}:{...a,base:target}; });
+    persist({...data,accounts,wealthHist:snapshotWealth(accounts,data.txs)});
+    setEditingAcc(null); setEditBalVal(""); showToast("💾 Saldo atualizado");
+  };
+
+  const exportCSV = () => {
+    if(data.txs.length===0){showToast("⚠️ Sem dados para exportar");return;}
+    const num=v=>v.toFixed(2).replace(".",",");
+    const esc=s=>`"${(s||"").replace(/"/g,'""')}"`;
+    const secLabel=sk=>sk==="transfer"?"Transferência":(SECTIONS[sk]?.label||sk);
+    let csv="\uFEFF";
+    csv+="Data;Secção;Categoria;Descrição;Valor (€);Sai de;Entra em\n";
+    [...data.txs].sort((a,b)=>a.date.localeCompare(b.date)).forEach(t=>{
+      csv+=[t.date,esc(secLabel(t.sk)),esc(t.cat),esc(t.desc),num(t.amt),esc(accName_(t.accFrom)||""),esc(accName_(t.accTo)||"")].join(";")+"\n";
+    });
+    if(data.accounts.length>0){
+      csv+="\n\nContas;Tipo;Saldo (€)\n";
+      data.accounts.forEach(a=>{csv+=[esc(a.name),esc(ACC_TYPES[a.type]?.label||a.type),num(accBalance(a))].join(";")+"\n";});
+      csv+=`Total;;${num(totalWealth)}\n`;
+    }
+    const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
+    const url=URL.createObjectURL(blob);
+    const el=document.createElement("a"); el.href=url; el.download=`orcamento_${todayStr()}.csv`;
+    document.body.appendChild(el); el.click(); document.body.removeChild(el); URL.revokeObjectURL(url);
+    showToast("📤 Exportado!");
+  };
+
+  const txDisplay = t => {
+    let accInfo="";
+    if(t.accFrom&&t.accTo) accInfo=`${accName_(t.accFrom)||"?"} → ${accName_(t.accTo)||"?"}`;
+    else if(t.accFrom) accInfo=accName_(t.accFrom)||"";
+    else if(t.accTo)   accInfo=accName_(t.accTo)||"";
+    if(isTransfer(t)) return {bg:TRANSFER.bg,emoji:TRANSFER.emoji,color:TRANSFER.color,sign:"",accInfo};
+    const s=SECTIONS[t.sk], ds=s.sign*iSign(t.sk,t.cat);
+    return {bg:s.bg,emoji:s.emoji,color:ds>0?"#16a34a":"#dc2626",sign:ds>0?"+":"-",accInfo};
+  };
+
+  const AccSelect = ({value,onChange,placeholder}) => (
+    <select value={value} onChange={e=>onChange(e.target.value)}
+      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none">
+      <option value="">{placeholder}</option>
+      {data.accounts.map(a=><option key={a.id} value={a.id}>{ACC_TYPES[a.type]?.emoji} {a.name}</option>)}
+    </select>
+  );
+
+  const TxRow = ({t, deletable}) => {
+    const d=txDisplay(t);
+    return (
+      <div className="px-4 py-2.5 border-b border-gray-50 flex items-center gap-3">
+        <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-sm" style={{backgroundColor:d.bg}}>{d.emoji}</div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium text-gray-700 truncate">{t.desc||t.cat}</div>
+          <div className="text-xs text-gray-400 truncate">{isTransfer(t)?"":t.cat+" · "}{d.accInfo?`${d.accInfo} · `:""}{t.date.slice(5).replace("-","/")}</div>
+        </div>
+        <div className={`text-sm font-semibold flex-shrink-0 ${deletable?"mr-1":""}`} style={{color:d.color}}>{d.sign}{fmt(t.amt)}</div>
+        {deletable&&<button onClick={()=>askDelTx(t)} className="text-gray-300 hover:text-red-400 text-xl leading-none flex-shrink-0 px-1">×</button>}
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50" style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"}}>
+
+      {/* Toast */}
+      {toast&&<div className="fixed top-4 left-1/2 z-50 bg-gray-800 text-white text-xs px-4 py-2 rounded-full shadow-lg" style={{transform:"translateX(-50%)"}}>{toast}</div>}
+
+      {/* Undo */}
+      {undoSnap&&(
+        <div className="fixed bottom-20 left-1/2 z-50 bg-gray-800 text-white text-xs pl-4 pr-2 py-2 rounded-full shadow-lg flex items-center gap-3" style={{transform:"translateX(-50%)"}}>
+          <span>🗑️ Eliminado</span>
+          <button onClick={undo} className="bg-white text-gray-800 font-semibold rounded-full px-3 py-1 text-xs">↩️ Anular</button>
+        </div>
+      )}
+
+      {/* Modal confirmação */}
+      {confirmDel&&(
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{backgroundColor:"rgba(0,0,0,0.4)"}} onClick={()=>setConfirmDel(null)}>
+          <div className="bg-white rounded-2xl shadow-xl p-5 w-full max-w-sm" onClick={e=>e.stopPropagation()}>
+            <div className="text-2xl mb-2">{confirmDel.type==="acc"?"💼":"🗑️"}</div>
+            <div className="font-semibold text-gray-800 text-sm mb-1">Apagar {confirmDel.type==="acc"?"a conta":"o lançamento"} "{confirmDel.label}"?</div>
+            <div className="text-xs text-gray-500 mb-4">{confirmDel.detail}</div>
+            <div className="flex gap-2">
+              <button onClick={()=>setConfirmDel(null)} className="flex-1 bg-gray-100 text-gray-700 rounded-xl py-2.5 text-sm font-medium">Cancelar</button>
+              <button onClick={execDelete} className="flex-1 text-white rounded-xl py-2.5 text-sm font-semibold" style={{backgroundColor:"#dc2626"}}>Apagar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Menu utilizador */}
+      {showMenu&&(
+        <div className="fixed inset-0 z-50 flex items-end justify-center px-4 pb-24" style={{backgroundColor:"rgba(0,0,0,0.3)"}} onClick={()=>setShowMenu(false)}>
+          <div className="bg-white rounded-2xl shadow-xl p-4 w-full max-w-sm" onClick={e=>e.stopPropagation()}>
+            <div className="text-xs text-gray-400 mb-3 text-center truncate">{user.email}</div>
+            <button onClick={exportCSV} className="w-full text-left px-3 py-2.5 rounded-xl text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 mb-1">
+              <span>📤</span> Exportar para Excel (CSV)
+            </button>
+            <button onClick={()=>{onLogout();setShowMenu(false);}} className="w-full text-left px-3 py-2.5 rounded-xl text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
+              <span>🚪</span> Sair
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="bg-white shadow-sm sticky top-0 z-10">
+        <div className="max-w-xl mx-auto px-4 py-3 flex items-center justify-between">
+          <h1 className="text-base font-bold text-gray-900">💰 Orçamento Pessoal</h1>
+          <div className="flex items-center gap-2">
+            {saving&&<span className="text-xs text-gray-300">A guardar…</span>}
+            {tab!=="contas"&&(
+              <div className="flex items-center gap-1">
+                <button onClick={()=>setYear(y=>y-1)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500">‹</button>
+                <span className="text-sm font-semibold w-10 text-center text-gray-700">{year}</span>
+                <button onClick={()=>setYear(y=>y+1)} className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 text-gray-500">›</button>
+              </div>
+            )}
+            <button onClick={()=>setShowMenu(v=>!v)} className="w-8 h-8 flex items-center justify-center rounded-full bg-blue-100 text-blue-600 text-xs font-bold ml-1">
+              {user.email[0].toUpperCase()}
+            </button>
+          </div>
+        </div>
+        {tab!=="contas"&&(
+          <div className="overflow-x-auto">
+            <div className="flex gap-1 px-4 pb-2 max-w-xl mx-auto" style={{minWidth:"max-content"}}>
+              {MS.map((m,i)=>(
+                <button key={i} onClick={()=>{setMonth(i);setEditMode(false);}}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${month===i?"text-white":"bg-gray-100 text-gray-600"}`}
+                  style={month===i?{backgroundColor:"#2563eb"}:{}}>{m}</button>
+              ))}
+            </div>
+          </div>
+        )}
+      </header>
+
+      <main className="max-w-xl mx-auto px-4 py-4 pb-24">
+
+        {/* RESUMO */}
+        {tab==="resumo"&&(
+          <div className="space-y-4">
+            <div className="bg-white rounded-2xl p-4 shadow-sm">
+              <div className="text-xs text-gray-400 mb-1">{MS[month]} {year} — Saldo do Mês</div>
+              <div className={`text-3xl font-bold ${saldoR>=0?"text-green-600":"text-red-500"}`}>{fmt(saldoR)}</div>
+              <div className="text-xs text-gray-400 mt-0.5">Previsto: {fmt(saldoP)}</div>
+              <div className="mt-3 pt-3 border-t border-gray-100 flex gap-6 flex-wrap">
+                <div><div className="text-xs text-gray-400">Taxa Poupança</div><div className="text-sm font-bold text-blue-600">{taxaPoup.toFixed(0)}%</div></div>
+                <div><div className="text-xs text-gray-400">Saldo Acumulado</div><div className={`text-sm font-bold ${saldoAcc>=0?"text-green-600":"text-red-500"}`}>{fmt(saldoAcc)}</div></div>
+                {data.accounts.length>0&&<div><div className="text-xs text-gray-400">Património</div><div className="text-sm font-bold text-violet-600">{fmt(totalWealth)}</div></div>}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {[{label:"Rendimento Líquido",tot:tR,color:"#16a34a",pos:true},{label:"Poupanças",tot:tP,color:"#2563eb",pos:true},
+                {label:"Essenciais",tot:tE,color:"#ea580c",pos:false},{label:"Variáveis",tot:tV,color:"#dc2626",pos:false}].map(c=>{
+                const over=!c.pos&&c.tot.r>c.tot.p&&c.tot.p>0, diff=Math.abs(c.tot.r-c.tot.p);
+                return (
+                  <div key={c.label} className="bg-white rounded-xl p-3 shadow-sm">
+                    <div className="text-xs text-gray-400 mb-1">{c.label}</div>
+                    <div className="text-lg font-bold" style={{color:c.color}}>{fmt(c.tot.r)}</div>
+                    <div className="text-xs text-gray-300">Prev: {fmt(c.tot.p)}</div>
+                    {c.tot.p>0&&diff>0.005&&<div className={`text-xs mt-1 font-medium ${over?"text-red-500":"text-green-600"}`}>{over?"▲ ":"▼ "}{fmt(diff)}</div>}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-4 py-3 flex justify-between items-center border-b border-gray-100">
+                <div className="font-semibold text-sm text-gray-700">Últimos lançamentos</div>
+                <button onClick={()=>setTab("lancar")} className="text-xs text-blue-600">Ver todos →</button>
+              </div>
+              {monthTxs.length===0
+                ?<div className="px-4 py-6 text-center text-xs text-gray-400">Sem lançamentos em {MS[month]}<br/><span className="text-gray-300">Vai a ➕ Lançar para começar</span></div>
+                :[...monthTxs].reverse().slice(0,5).map(t=><TxRow key={t.id} t={t}/>)}
+            </div>
+          </div>
+        )}
+
+        {/* LANÇAR */}
+        {tab==="lancar"&&(
+          <div className="space-y-4">
+            <div className="bg-white rounded-2xl shadow-sm p-4">
+              <h2 className="font-semibold text-sm text-gray-800 mb-4">Novo Lançamento — {MS[month]} {year}</h2>
+              <div className="mb-3">
+                <div className="text-xs text-gray-400 mb-1.5">Secção</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {Object.entries(SECTIONS).map(([sk,s])=>(
+                    <button key={sk} onClick={()=>{setFormSection(sk);setFormCat(s.items[0]);setFormAccFrom("");setFormAccTo("");}}
+                      className="text-xs py-2 px-2 rounded-lg border font-medium text-left"
+                      style={formSection===sk?{backgroundColor:s.color,borderColor:s.color,color:"white"}:{backgroundColor:"white",borderColor:"#e5e7eb",color:"#374151"}}>
+                      {s.emoji} {s.label}
+                    </button>
+                  ))}
+                  {data.accounts.length>1&&(
+                    <button onClick={()=>{setFormSection("transfer");setFormAccFrom("");setFormAccTo("");}}
+                      className="text-xs py-2 px-2 rounded-lg border font-medium text-left col-span-2"
+                      style={formSection==="transfer"?{backgroundColor:TRANSFER.color,borderColor:TRANSFER.color,color:"white"}:{backgroundColor:"white",borderColor:"#e5e7eb",color:"#374151"}}>
+                      {TRANSFER.emoji} Transferência entre contas
+                    </button>
+                  )}
+                </div>
+              </div>
+              {formSection==="transfer"?(
+                <>
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div><div className="text-xs text-gray-400 mb-1.5">Sai de</div><AccSelect value={formAccFrom} onChange={setFormAccFrom} placeholder="— conta —"/></div>
+                    <div><div className="text-xs text-gray-400 mb-1.5">Entra em</div><AccSelect value={formAccTo} onChange={setFormAccTo} placeholder="— conta —"/></div>
+                  </div>
+                  <div className="mb-3 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-600">🔁 Não conta como despesa nem rendimento.</div>
+                </>
+              ):(
+                <>
+                  <div className="mb-3">
+                    <div className="text-xs text-gray-400 mb-1.5">Categoria</div>
+                    <select value={formCat} onChange={e=>setFormCat(e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none">
+                      {SECTIONS[formSection].items.map(c=><option key={c} value={c}>{c}{isDed(formSection,c)?" (desconto)":""}</option>)}
+                    </select>
+                  </div>
+                  {data.accounts.length>0&&(formSection==="poupancas"?(
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                      <div><div className="text-xs text-gray-400 mb-1.5">Sai de</div><AccSelect value={formAccFrom} onChange={setFormAccFrom} placeholder="— conta —"/></div>
+                      <div><div className="text-xs text-gray-400 mb-1.5">Entra em</div><AccSelect value={formAccTo} onChange={setFormAccTo} placeholder="— conta —"/></div>
+                    </div>
+                  ):(
+                    <div className="mb-3">
+                      <div className="text-xs text-gray-400 mb-1.5">{formSection==="rendimentos"?(isDed(formSection,formCat)?"Sai da conta":"Entra na conta"):"Sai da conta"} (opcional)</div>
+                      <AccSelect value={formAccFrom} onChange={setFormAccFrom} placeholder="— sem conta —"/>
+                    </div>
+                  ))}
+                  {isDed(formSection,formCat)&&<div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-700">⚠️ <strong>{formCat}</strong> é um desconto — será subtraído ao rendimento.</div>}
+                </>
+              )}
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div><div className="text-xs text-gray-400 mb-1.5">Valor (€)</div>
+                  <input type="text" inputMode="decimal" value={formAmount} onChange={e=>setFormAmount(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addTx()} placeholder="0,00" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
+                <div><div className="text-xs text-gray-400 mb-1.5">Data</div>
+                  <input type="date" value={formDate} onChange={e=>setFormDate(e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
+              </div>
+              <div className="mb-3"><div className="text-xs text-gray-400 mb-1.5">Descrição (opcional)</div>
+                <input type="text" value={formDesc} onChange={e=>setFormDesc(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addTx()} placeholder={formSection==="transfer"?"ex: reforço poupança":"ex: Pingo Doce"} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
+              <button onClick={addTx} className="w-full text-white rounded-xl py-3 font-semibold text-sm" style={{backgroundColor:formSection==="transfer"?TRANSFER.color:"#2563eb"}}>
+                {formSection==="transfer"?"🔁 Registar Transferência":"➕ Adicionar Lançamento"}
+              </button>
+            </div>
+            {monthTxs.length>0&&(
+              <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                <div className="px-4 py-3 font-semibold text-sm text-gray-700 border-b border-gray-100">{MS[month]} {year} — {monthTxs.length} lançamento{monthTxs.length!==1?"s":""}</div>
+                {[...monthTxs].reverse().map(t=><TxRow key={t.id} t={t} deletable/>)}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* DETALHE */}
+        {tab==="detalhe"&&(
+          <div className="space-y-3">
+            <div className="flex gap-2">
+              {!editMode?(
+                <><button onClick={enterEditMode} className="flex-1 bg-white border border-gray-200 rounded-xl py-2.5 text-xs font-medium text-gray-700">✏️ Editar Previsto</button>
+                <button onClick={copyPrevMonth} className="flex-1 bg-white border border-gray-200 rounded-xl py-2.5 text-xs font-medium text-gray-700">📋 Copiar mês anterior</button></>
+              ):(
+                <><button onClick={saveBudget} className="flex-1 text-white rounded-xl py-2.5 text-sm font-semibold" style={{backgroundColor:"#2563eb"}}>💾 Guardar</button>
+                <button onClick={()=>{setEditMode(false);setBudgetDraft({})}} className="bg-white border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-600">✕</button></>
+              )}
+            </div>
+            {Object.entries(SECTIONS).map(([sk,s])=>{
+              const tot=stot(sk);
+              const rows=editMode?s.items:s.items.filter(c=>bp(sk,c)>0||real[sk][c]>0);
+              if(!editMode&&rows.length===0) return null;
+              return (
+                <div key={sk} className="bg-white rounded-2xl shadow-sm overflow-hidden">
+                  <div className="px-4 py-2.5 flex items-center justify-between" style={{backgroundColor:s.bg}}>
+                    <div className="font-semibold text-sm flex items-center gap-1.5" style={{color:s.text}}><span>{s.emoji}</span><span>{s.label}</span></div>
+                    <div className="text-right"><div className="text-sm font-bold" style={{color:s.color}}>{fmt(tot.r)}</div>{tot.p!==0&&<div className="text-xs text-gray-400">Prev: {fmt(tot.p)}</div>}</div>
+                  </div>
+                  <div className="grid px-4 py-1 bg-gray-50 border-b border-gray-100" style={{gridTemplateColumns:COL}}>
+                    <div className="text-xs text-gray-400">Categoria</div><div className="text-xs text-gray-400 text-right">Previsto</div><div className="text-xs text-gray-400 text-right">Realizado</div>
+                  </div>
+                  {(editMode?s.items:rows).map(c=>{
+                    const ded=isDed(sk,c),prev=bp(sk,c),rl=real[sk][c],ps=ded?-prev:prev,rs=ded?-rl:rl,dev=rs-ps,isOver=(s.sign<0||ded)&&dev>0&&prev>0;
+                    return (
+                      <div key={c} className="grid px-4 py-2 border-b border-gray-50 items-center" style={{gridTemplateColumns:COL}}>
+                        <div className="text-xs pr-1 leading-tight" style={{color:ded?"#b45309":"#374151"}}>{ded&&<span className="text-amber-500 mr-1">↓</span>}{c}</div>
+                        <div className="text-right">{editMode?(<input type="text" inputMode="decimal" value={getBD(sk,c)} onChange={e=>setBudgetDraft(b=>({...b,[`${sk}|${c}`]:e.target.value}))} placeholder="0" className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:border-blue-400 outline-none"/>):(<span className="text-xs text-gray-400">{prev>0?(ded?"-":"")+fmt(prev):"—"}</span>)}</div>
+                        <div className="text-right"><div className="text-xs font-medium" style={{color:rl>0?(ded?"#dc2626":s.color):"#d1d5db"}}>{rl>0?(ded?"-":"")+fmt(rl):"—"}</div>{prev>0&&rl>0&&<div className={`text-xs ${isOver?"text-red-500":"text-green-600"}`}>{isOver?"▲":"▼"} {fmt(Math.abs(dev))}</div>}</div>
+                      </div>
+                    );
+                  })}
+                  <div className="grid px-4 py-2 bg-gray-50" style={{gridTemplateColumns:COL}}>
+                    <div className="text-xs font-bold text-gray-600">Total</div><div className="text-xs font-bold text-gray-400 text-right">{fmt(tot.p)}</div><div className="text-xs font-bold text-right" style={{color:s.color}}>{fmt(tot.r)}</div>
+                  </div>
+                </div>
+              );
+            })}
+            <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-4 py-2.5 bg-gray-800"><div className="text-white font-semibold text-sm">Resultado Financeiro</div></div>
+              {[{label:"Saldo do Mês",r:saldoR,p:saldoP},{label:"Saldo Acumulado",r:saldoAcc,p:null},{label:"Taxa de Poupança",r:taxaPoup,p:null,pct:true}].map(row=>(
+                <div key={row.label} className="grid px-4 py-2.5 border-b border-gray-50 items-center" style={{gridTemplateColumns:COL}}>
+                  <div className="text-xs font-medium text-gray-700">{row.label}</div>
+                  <div className="text-xs text-gray-400 text-right">{row.p!=null?fmt(row.p):"—"}</div>
+                  <div className={`text-xs font-bold text-right ${row.r>=0?"text-green-600":"text-red-500"}`}>{row.pct?`${row.r.toFixed(0)}%`:fmt(row.r)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* CONTAS */}
+        {tab==="contas"&&(
+          <div className="space-y-4">
+            <div className="rounded-2xl p-4 shadow-sm text-white" style={{background:"linear-gradient(135deg,#7c3aed,#2563eb)"}}>
+              <div className="text-xs opacity-80 mb-1">💎 Património Total</div>
+              <div className="text-3xl font-bold">{fmt(totalWealth)}</div>
+              <div className="text-xs opacity-80 mt-1">{data.accounts.length} conta{data.accounts.length!==1?"s":""}</div>
+            </div>
+            {data.wealthHist.length>1&&(
+              <div className="bg-white rounded-2xl shadow-sm p-4">
+                <h3 className="font-semibold text-sm text-gray-700 mb-3">Evolução do Património</h3>
+                <ResponsiveContainer width="100%" height={160}>
+                  <LineChart data={data.wealthHist.map(h=>({...h,label:h.date.slice(5).replace("-","/")}))} margin={{top:5,right:5,left:0,bottom:5}}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/>
+                    <XAxis dataKey="label" tick={{fontSize:9}}/><YAxis tick={{fontSize:9}} width={55} domain={["auto","auto"]}/>
+                    <Tooltip formatter={v=>[fmt(v),"Total"]}/>
+                    <Line type="monotone" dataKey="total" stroke="#7c3aed" strokeWidth={2} dot={{r:3}}/>
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+            <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-4 py-3 flex justify-between items-center border-b border-gray-100">
+                <div className="font-semibold text-sm text-gray-700">As minhas contas</div>
+                <button onClick={()=>setShowAccForm(v=>!v)} className="text-xs text-blue-600 font-medium">{showAccForm?"✕ Fechar":"+ Nova conta"}</button>
+              </div>
+              {showAccForm&&(
+                <div className="px-4 py-3 bg-blue-50 border-b border-blue-100 space-y-2.5">
+                  <input type="text" value={accName} onChange={e=>setAccName(e.target.value)} placeholder="Nome da conta (ex: CGD à ordem)" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none"/>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {Object.entries(ACC_TYPES).map(([tk,t])=>(
+                      <button key={tk} onClick={()=>setAccType(tk)} className="text-xs py-1.5 px-1 rounded-lg border font-medium"
+                        style={accType===tk?{backgroundColor:t.color,borderColor:t.color,color:"white"}:{backgroundColor:"white",borderColor:"#e5e7eb",color:"#374151"}}>
+                        {t.emoji} {t.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="text-xs text-gray-500">{ACC_TYPES[accType].auto?"🔄 Saldo automático — atualiza com os lançamentos":"✋ Saldo manual — ideal para investimentos"}</div>
+                  <div className="flex gap-2">
+                    <input type="text" inputMode="decimal" value={accBal} onChange={e=>setAccBal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addAccount()} placeholder="Saldo atual (€)" className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none"/>
+                    <button onClick={addAccount} className="text-white rounded-lg px-4 py-2 text-sm font-semibold" style={{backgroundColor:"#2563eb"}}>Criar</button>
+                  </div>
+                </div>
+              )}
+              {data.accounts.length===0&&!showAccForm&&<div className="px-4 py-8 text-center text-xs text-gray-400">Ainda não tens contas<br/><span className="text-gray-300">Adiciona para ver o teu património total</span></div>}
+              {data.accounts.map(a=>{
+                const t=ACC_TYPES[a.type]||ACC_TYPES.outro, bal=accBalance(a), pct=totalWealth>0?Math.max(0,bal)/totalWealth*100:0;
+                return (
+                  <div key={a.id} className="px-4 py-3 border-b border-gray-50">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 text-base" style={{backgroundColor:t.color+"18"}}>{t.emoji}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-gray-700 truncate">{a.name}</div>
+                        <div className="text-xs text-gray-400">{t.label} · {isAuto(a)?"🔄":"✋"} · {pct.toFixed(0)}%</div>
+                      </div>
+                      {editingAcc===a.id?(
+                        <div className="flex gap-1.5 items-center">
+                          <input type="text" inputMode="decimal" value={editBalVal} onChange={e=>setEditBalVal(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveAccBalance(a.id)} autoFocus className="w-24 text-right border border-blue-300 rounded-lg px-2 py-1.5 text-sm focus:border-blue-500 outline-none"/>
+                          <button onClick={()=>saveAccBalance(a.id)} className="text-white rounded-lg px-2.5 py-1.5 text-xs font-semibold" style={{backgroundColor:"#2563eb"}}>✓</button>
+                          <button onClick={()=>{setEditingAcc(null);setEditBalVal("");}} className="text-gray-400 px-1">✕</button>
+                        </div>
+                      ):(
+                        <div className="flex items-center gap-2">
+                          <div className="text-sm font-bold" style={{color:t.color}}>{fmt(bal)}</div>
+                          <button onClick={()=>{setEditingAcc(a.id);setEditBalVal(bal.toString());}} className="text-gray-300 hover:text-blue-500">✏️</button>
+                          <button onClick={()=>askDelAcc(a)} className="text-gray-300 hover:text-red-400 text-xl leading-none px-1">×</button>
+                        </div>
+                      )}
+                    </div>
+                    {totalWealth>0&&<div className="mt-2 bg-gray-100 rounded-full h-1"><div className="h-1 rounded-full" style={{width:`${pct}%`,backgroundColor:t.color}}/></div>}
+                  </div>
+                );
+              })}
+            </div>
+            {data.accounts.length>1&&(()=>{
+              const byType={};
+              data.accounts.forEach(a=>{const b=accBalance(a);byType[a.type]=(byType[a.type]||0)+b;});
+              const pieData=Object.entries(byType).filter(([,v])=>v>0).map(([tk,v])=>({name:ACC_TYPES[tk].label,value:v,color:ACC_TYPES[tk].color}));
+              if(pieData.length<2) return null;
+              return (
+                <div className="bg-white rounded-2xl shadow-sm p-4">
+                  <h3 className="font-semibold text-sm text-gray-700 mb-3">Distribuição por Tipo</h3>
+                  <ResponsiveContainer width="100%" height={180}>
+                    <PieChart><Pie data={pieData} cx="50%" cy="50%" outerRadius={65} dataKey="value" label={({name,percent})=>`${name} ${(percent*100).toFixed(0)}%`} labelLine>{pieData.map((e,i)=><Cell key={i} fill={e.color}/>)}</Pie><Tooltip formatter={v=>[fmt(v),"Valor"]}/></PieChart>
+                  </ResponsiveContainer>
+                </div>
+              );
+            })()}
+            <div className="bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5 text-xs text-blue-700">
+              💡 Nas contas 🔄, o saldo atualiza-se com os lançamentos. Se não bater certo com o banco, edita (✏️) — a app acerta. Nas contas ✋, atualizas tu.
+            </div>
+          </div>
+        )}
+
+        {/* GRÁFICOS */}
+        {tab==="graficos"&&(()=>{
+          const pieData=[{name:"Poupanças",value:tP.r,color:"#2563eb"},{name:"Essenciais",value:tE.r,color:"#ea580c"},{name:"Variáveis",value:tV.r,color:"#dc2626"}].filter(d=>d.value>0);
+          const barData=Object.entries(SECTIONS).map(([sk,s])=>{const t=stot(sk);return{name:s.emoji+" "+s.label.split(" ").slice(-1)[0],previsto:+Math.abs(t.p).toFixed(2),realizado:+Math.abs(t.r).toFixed(2)};});
+          const topCats=[];
+          Object.entries(SECTIONS).forEach(([sk,s])=>{if(s.sign<0)s.items.forEach(c=>{const r=real[sk][c];if(r>0)topCats.push({name:c,value:r,color:s.color});});});
+          topCats.sort((a,b)=>b.value-a.value);
+          const totalOut=tE.r+tV.r+tP.r;
+          return (
+            <div className="space-y-4">
+              {pieData.length===0&&topCats.length===0&&<div className="bg-white rounded-2xl shadow-sm p-8 text-center text-gray-400 text-sm">Sem dados para {MS[month]} {year}</div>}
+              {pieData.length>0&&(<div className="bg-white rounded-2xl shadow-sm p-4"><h3 className="font-semibold text-sm text-gray-700 mb-3">Distribuição de Saídas</h3><ResponsiveContainer width="100%" height={200}><PieChart><Pie data={pieData} cx="50%" cy="50%" outerRadius={75} dataKey="value" label={({name,percent})=>`${name} ${(percent*100).toFixed(0)}%`} labelLine>{pieData.map((e,i)=><Cell key={i} fill={e.color}/>)}</Pie><Tooltip formatter={v=>[fmt(v),"Valor"]}/></PieChart></ResponsiveContainer></div>)}
+              {barData.some(d=>d.previsto>0||d.realizado>0)&&(<div className="bg-white rounded-2xl shadow-sm p-4"><h3 className="font-semibold text-sm text-gray-700 mb-3">Previsto vs Realizado</h3><ResponsiveContainer width="100%" height={180}><BarChart data={barData} margin={{top:5,right:5,left:0,bottom:5}}><CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0"/><XAxis dataKey="name" tick={{fontSize:9}}/><YAxis tick={{fontSize:9}} width={55}/><Tooltip formatter={v=>[fmt(v)]}/><Legend wrapperStyle={{fontSize:11}}/><Bar dataKey="previsto" name="Previsto" fill="#cbd5e1" radius={[4,4,0,0]}/><Bar dataKey="realizado" name="Realizado" fill="#3b82f6" radius={[4,4,0,0]}/></BarChart></ResponsiveContainer></div>)}
+              {topCats.length>0&&(<div className="bg-white rounded-2xl shadow-sm p-4"><h3 className="font-semibold text-sm text-gray-700 mb-3">Top Categorias</h3><div className="space-y-2.5">{topCats.slice(0,8).map(c=>{const pct=totalOut>0?c.value/totalOut*100:0;return(<div key={c.name} className="flex items-center gap-2"><div className="text-xs text-gray-600 truncate flex-shrink-0" style={{width:120}}>{c.name}</div><div className="flex-1 bg-gray-100 rounded-full h-1.5"><div className="h-1.5 rounded-full" style={{width:`${pct}%`,backgroundColor:c.color}}/></div><div className="text-xs font-medium text-gray-700 text-right flex-shrink-0" style={{width:70}}>{fmt(c.value)}</div></div>);})}</div></div>)}
+            </div>
+          );
+        })()}
+      </main>
+
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-10">
+        <div className="max-w-xl mx-auto flex">
+          {[{id:"resumo",icon:"📊",label:"Resumo"},{id:"lancar",icon:"➕",label:"Lançar"},{id:"detalhe",icon:"📋",label:"Detalhe"},{id:"contas",icon:"💼",label:"Contas"},{id:"graficos",icon:"📈",label:"Gráficos"}].map(n=>(
+            <button key={n.id} onClick={()=>setTab(n.id)}
+              className={`flex-1 py-2 flex flex-col items-center gap-0.5 ${tab===n.id?"text-blue-600":"text-gray-400"}`}>
+              <span className="text-xl">{n.icon}</span><span className="text-xs">{n.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
