@@ -867,11 +867,26 @@ function Budget({ user, onLogout }) {
 
   const processBankRows = rows => {
     const out = [];
+    // deteção inteligente de colunas: procura cabeçalhos que CONTENHAM as palavras-chave
+    const headers = rows[0]._headers || [];
+    const findCol = keywords => {
+      for (let i=0;i<headers.length;i++) {
+        for (let j=0;j<keywords.length;j++) {
+          if (headers[i].indexOf(keywords[j])>=0) return headers[i];
+        }
+      }
+      return null;
+    };
+    const colDate   = findCol(["data","date"]);
+    const colAmount = findCol(["amount","valor","montante","import","value"]) || findCol(["debit","credit","debito","credito"]);
+    const colDesc   = findCol(["descri","description","designa","movimento","merchant","detalhe","concept"]);
+    const colMerch  = findCol(["merchant"]);
     rows.forEach(r=>{
-      const desc = r["descricao"]||r["description"]||r["designacao"]||r["movimento"]||r["obs"]||r["observacoes"]||"";
-      const amt = parseVal(r["valor"]||r["montante"]||r["amount"]||r["debito"]||r["credito"]||r["importancia"]);
+      let desc = (colDesc ? r[colDesc] : "") || "";
+      if (colMerch && colMerch!==colDesc && r[colMerch]) desc = (r[colMerch]+" "+desc).trim();
+      const amt = parseVal(colAmount ? r[colAmount] : "");
       if (!amt) return;
-      const date = parseDate(r["data"]||r["date"]||r["data mov"]||r["data valor"]||r["data movimento"]||r["data operacao"]);
+      const date = parseDate(colDate ? r[colDate] : "");
       const cls = autoClassify(desc);
       const dup = data.txs.some(t=>t.date===date&&Math.abs(t.amt-amt)<0.01);
       out.push({_id:uid(), _dup:dup, sk:cls.sk, cat:cls.cat, amt:amt, date:date, desc:desc});
