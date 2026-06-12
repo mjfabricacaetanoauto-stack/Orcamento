@@ -29,13 +29,13 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 const SECTIONS = {
   rendimentos: { label:"Rendimentos", emoji:"💵", color:"#16a34a", bg:"#f0fdf4", text:"#166534", sign:1,
     deductions:["Seg. Social","IRS"],
-    items:["Vencimento Base","Subsídio alimentação","Subsídio de férias/natal","Prémios/subsídios adicionais","Outros","Seg. Social","IRS"] },
+    items:["Vencimento Base","Subsídio alimentação","Subsídio de férias/natal","Prémios/subsídios adicionais","Outros Rendimentos","Seg. Social","IRS"] },
   poupancas: { label:"Poupanças / Investimentos", emoji:"🏦", color:"#2563eb", bg:"#eff6ff", text:"#1e40af", sign:-1,
-    items:["Poupança conjunta","Poupança","Férias","Fundo de Emergência","Reforma","Estudos","Casa","Investimento","Outros"] },
-  essenciais: { label:"Despesas Essenciais", emoji:"🏠", color:"#ea580c", bg:"#fff7ed", text:"#9a3412", sign:-1,
-    items:["Electricidade e Gás","Água","Internet","Supermercado","Combustível","Portagens","Seguro - carro","IUC","Telemóvel","Consultas médicas","Farmácia","Seguro - saúde","Estética (cabelo, unhas, etc)","Cabeleireiro","Ginásio","Subscrições","Outros"] },
+    items:["Poupança conjunta","Poupança","Férias","Fundo de Emergência","Reforma","Estudos","Casa","Investimento","Outras Poupanças"] },
+  essenciais: { label:"Despesas Recorrentes", emoji:"🏠", color:"#ea580c", bg:"#fff7ed", text:"#9a3412", sign:-1,
+    items:["Electricidade","Gás","Água","Internet","Supermercado","Combustível","Portagens","Seguro - carro","IUC","Telemóvel","Consultas médicas","Farmácia","Seguro - saúde","Estética (cabelo, unhas, etc)","Cabeleireiro","Ginásio","Subscrições","Outras Despesas Recorrentes"] },
   variaveis: { label:"Despesas Variáveis", emoji:"🛍️", color:"#dc2626", bg:"#fef2f2", text:"#991b1b", sign:-1,
-    items:["Fins de semana","Férias/viagens","Prendas/aniversários","Restaurantes","Roupa/sapatos","Cosmética","Livros/Gadgets/Cursos","Estacionamentos","Manutenção Carro","Estudos","Outros"] }
+    items:["Fins de semana","Férias/viagens","Prendas/aniversários","Restaurantes","Roupa/sapatos","Cosmética","Livros/Gadgets/Cursos","Estacionamentos","Manutenção Carro","Estudos","Outras Despesas Variáveis"] }
 };
 const TRANSFER  = { label:"Transferência", emoji:"🔁", color:"#64748b", bg:"#f1f5f9" };
 const ACC_TYPES = {
@@ -49,29 +49,55 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 const fmt = v => new Intl.NumberFormat("pt-PT",{style:"currency",currency:"EUR"}).format(v||0);
 const pn  = s => parseFloat((s||"0").toString().replace(",",".")) || 0;
 const todayStr = () => new Date().toISOString().split("T")[0];
-const isDed     = (sk,cat) => SECTIONS[sk] && SECTIONS[sk].deductions && SECTIONS[sk].deductions.includes(cat);
+const isDed     = (sk,cat) => SECTIONS[sk] && SECTIONS[sk].deductions && SECTIONS[sk].deductions.indexOf(cat)>=0;
 const iSign     = (sk,cat) => isDed(sk,cat) ? -1 : 1;
 const isAuto    = a => ACC_TYPES[a.type] ? ACC_TYPES[a.type].auto !== false : true;
 const isTransfer= t => t.sk === "transfer";
 const COL = "1fr 110px 110px";
-const EMPTY_DATA = { txs:[], budgets:{}, accounts:[], wealthHist:[] };
+const EMPTY_DATA = { txs:[], budgets:{}, accounts:[], wealthHist:[], customCats:{}, archivedCats:{} };
+
+// ── Migração de categorias renomeadas ────────────────────────────
+const RENAME_MAP = {
+  rendimentos: { "Outros":"Outros Rendimentos" },
+  poupancas:   { "Outros":"Outras Poupanças" },
+  essenciais:  { "Outros":"Outras Despesas Recorrentes", "Electricidade e Gás":"Electricidade" },
+  variaveis:   { "Outros":"Outras Despesas Variáveis" }
+};
+function migrateData(d) {
+  let changed = false;
+  if (!d.customCats)   { d.customCats = {};   changed = true; }
+  if (!d.archivedCats) { d.archivedCats = {}; changed = true; }
+  (d.txs||[]).forEach(t=>{
+    const m = RENAME_MAP[t.sk];
+    if (m && m[t.cat]) { t.cat = m[t.cat]; changed = true; }
+  });
+  const b = d.budgets||{};
+  Object.keys(b).forEach(y=>{
+    Object.keys(b[y]||{}).forEach(mo=>{
+      Object.keys(b[y][mo]||{}).forEach(sk=>{
+        const m = RENAME_MAP[sk];
+        if (!m) return;
+        const obj = b[y][mo][sk];
+        Object.keys(m).forEach(oldC=>{
+          if (obj && obj[oldC]!==undefined) {
+            obj[m[oldC]] = (obj[m[oldC]]||0) + obj[oldC];
+            delete obj[oldC];
+            changed = true;
+          }
+        });
+      });
+    });
+  });
+  return changed;
+}
 
 // ── Mapeamento de tipos do Excel antigo ──────────────────────────
-const TIPO_MAP = {
-  "rendimentos":"rendimentos","rendimento":"rendimentos",
-  "poupancas":"poupancas","poupanca":"poupancas","investimentos":"poupancas",
-  "despesas essenciais":"essenciais","essenciais":"essenciais","recorrentes":"essenciais",
-  "despesas variaveis":"variaveis","variaveis":"variaveis","nao recorrentes":"variaveis"
-};
-const normTipo = s => (s||"").toLowerCase()
-  .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-  .replace(/\s*\/\s*/g," ").replace(/\s+/g," ").trim();
+const normStr = s => (s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s*\/\s*/g," ").replace(/\s+/g," ").trim();
 const mapTipo = s => {
-  const n = normTipo(s);
-  if (TIPO_MAP[n]) return TIPO_MAP[n];
-  if (n.includes("rendiment")) return "rendimentos";
-  if (n.includes("poupan")||n.includes("investiment")) return "poupancas";
-  if (n.includes("essencia")||n.includes("recorrente")&&!n.includes("nao")) return "essenciais";
+  const n = normStr(s);
+  if (n.indexOf("rendiment")>=0) return "rendimentos";
+  if (n.indexOf("poupan")>=0||n.indexOf("investiment")>=0) return "poupancas";
+  if (n.indexOf("essencia")>=0||(n.indexOf("recorrente")>=0&&n.indexOf("nao")<0)) return "essenciais";
   return "variaveis";
 };
 
@@ -79,7 +105,7 @@ const mapTipo = s => {
 const AUTO_RULES = [
   { kw:["pingo doce","continente","lidl","aldi","minipreco","mercadona","intermarche","auchan","spar"], sk:"essenciais", cat:"Supermercado" },
   { kw:["galp","repsol","cepsa","shell","prio","bp "], sk:"essenciais", cat:"Combustível" },
-  { kw:["edp","endesa","iberdrola","goldenergy"], sk:"essenciais", cat:"Electricidade e Gás" },
+  { kw:["edp","endesa","iberdrola","goldenergy"], sk:"essenciais", cat:"Electricidade" },
   { kw:["epal","aguas de","smas","indaqua"], sk:"essenciais", cat:"Água" },
   { kw:["nos comunicacoes","meo","vodafone","nowo"], sk:"essenciais", cat:"Internet" },
   { kw:["via verde","portagem","brisa"], sk:"essenciais", cat:"Portagens" },
@@ -94,14 +120,14 @@ const AUTO_RULES = [
   { kw:["vencimento","ordenado","salario"], sk:"rendimentos", cat:"Vencimento Base" }
 ];
 const autoClassify = desc => {
-  const d = (desc||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  const d = normStr(desc);
   for (let i=0;i<AUTO_RULES.length;i++) {
     const rule = AUTO_RULES[i];
     for (let j=0;j<rule.kw.length;j++) {
-      if (d.includes(rule.kw[j])) return { sk:rule.sk, cat:rule.cat };
+      if (d.indexOf(rule.kw[j])>=0) return { sk:rule.sk, cat:rule.cat };
     }
   }
-  return { sk:"variaveis", cat:"Outros" };
+  return { sk:"variaveis", cat:"Outras Despesas Variáveis" };
 };
 
 // ── Parser CSV ───────────────────────────────────────────────────
@@ -110,7 +136,7 @@ const parseCSV = text => {
   if (lines.length < 2) return [];
   const sep = (lines[0].split(";").length > lines[0].split(",").length) ? ";" : ",";
   const clean = s => s.replace(/^"+|"+$/g,"").trim();
-  const headers = lines[0].split(sep).map(h=>clean(h).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,""));
+  const headers = lines[0].split(sep).map(h=>normStr(clean(h)));
   return lines.slice(1).map(line=>{
     const cols = line.split(sep).map(clean);
     const obj = {};
@@ -118,7 +144,6 @@ const parseCSV = text => {
     return obj;
   });
 };
-
 const parseDate = s => {
   if (!s) return todayStr();
   const m1 = s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
@@ -130,7 +155,6 @@ const parseDate = s => {
   if (m2) return m2[0];
   return todayStr();
 };
-
 const parseVal = s => {
   const v = (s||"0").toString().replace("€","").replace(/\s/g,"").replace(",",".");
   return Math.abs(parseFloat(v)||0);
@@ -146,11 +170,11 @@ function SimplePie({ data }) {
     const frac = d.value/total;
     const a0 = angle, a1 = angle + frac*2*Math.PI;
     angle = a1;
-    if (frac >= 0.999) return Object.assign({}, d, {full:true, frac});
+    if (frac >= 0.999) return Object.assign({}, d, {full:true, frac:frac});
     const x0=cx+r*Math.cos(a0), y0=cy+r*Math.sin(a0);
     const x1=cx+r*Math.cos(a1), y1=cy+r*Math.sin(a1);
     const large = frac>0.5?1:0;
-    return Object.assign({}, d, {frac, path:"M "+cx+" "+cy+" L "+x0+" "+y0+" A "+r+" "+r+" 0 "+large+" 1 "+x1+" "+y1+" Z"});
+    return Object.assign({}, d, {frac:frac, path:"M "+cx+" "+cy+" L "+x0+" "+y0+" A "+r+" "+r+" 0 "+large+" 1 "+x1+" "+y1+" Z"});
   });
   return (
     <div className="flex items-center gap-4 flex-wrap">
@@ -163,7 +187,7 @@ function SimplePie({ data }) {
         {slices.map((s,i)=>(
           <div key={i} className="flex items-center gap-2 text-xs">
             <span className="w-3 h-3 rounded-sm flex-shrink-0" style={{backgroundColor:s.color}}></span>
-            <span className="text-gray-600 flex-1">{s.name}</span>
+            <span className="text-gray-600 flex-1 truncate">{s.name}</span>
             <span className="font-semibold text-gray-700">{(s.frac*100).toFixed(0)}%</span>
             <span className="text-gray-400">{fmt(s.value)}</span>
           </div>
@@ -194,6 +218,27 @@ function SimpleBars({ data }) {
       <div className="flex gap-4 text-xs text-gray-400 pt-1">
         <span className="flex items-center gap-1"><span className="w-3 h-2 rounded-sm inline-block" style={{backgroundColor:"#cbd5e1"}}></span> Previsto</span>
         <span className="flex items-center gap-1"><span className="w-3 h-2 rounded-sm inline-block" style={{backgroundColor:"#3b82f6"}}></span> Realizado</span>
+      </div>
+    </div>
+  );
+}
+
+function MonthBars({ data, color }) {
+  const max = Math.max.apply(null, data.map(d=>d.v).concat([1]));
+  return (
+    <div>
+      <div className="flex items-end gap-1" style={{height:120}}>
+        {data.map((d,i)=>(
+          <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">
+            <div className="w-full rounded-t" title={fmt(d.v)}
+              style={{height:Math.max(d.v/max*100,d.v>0?3:0)+"%", backgroundColor:color, minWidth:4}}/>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-1 mt-1">
+        {data.map((d,i)=>(
+          <div key={i} className="flex-1 text-center text-gray-400" style={{fontSize:9}}>{d.m}</div>
+        ))}
       </div>
     </div>
   );
@@ -253,7 +298,8 @@ function AuthScreen({ onLogin }) {
       const msgs = {
         "Invalid login credentials": "Email ou password incorretos",
         "Email not confirmed": "Confirma primeiro o teu email (vê a caixa de entrada)",
-        "User already registered": "Já existe uma conta com este email"
+        "User already registered": "Já existe uma conta com este email",
+        "Signups not allowed for this instance": "O registo de novas contas está desativado"
       };
       setError(msgs[e.message] || e.message || "Erro desconhecido");
     } finally { setLoading(false); }
@@ -357,6 +403,16 @@ function Budget({ user, onLogout }) {
   const [importRows, setImportRows]   = useState([]);
   const [importAcc, setImportAcc]     = useState("");
   const [importSel, setImportSel]     = useState({});
+  // edição de lançamentos
+  const [editTx, setEditTx]           = useState(null);
+  // seleção múltipla
+  const [selMode, setSelMode]         = useState(false);
+  const [selTxs, setSelTxs]           = useState({});
+  // gestão de categorias
+  const [catMgr, setCatMgr]           = useState(false);
+  const [newCatName, setNewCatName]   = useState({});
+  // vista de gráficos
+  const [chartView, setChartView]     = useState("mes");
   const undoTimer = useRef(null);
   const saveTimer = useRef(null);
 
@@ -364,8 +420,15 @@ function Budget({ user, onLogout }) {
     (async () => {
       try {
         const res = await sb.from("budget_data").select("data").eq("user_id", user.id).maybeSingle();
-        setData(res.data ? res.data.data : EMPTY_DATA);
-      } catch(e) { setData(EMPTY_DATA); }
+        const d = res.data ? res.data.data : JSON.parse(JSON.stringify(EMPTY_DATA));
+        if (!d.customCats) d.customCats = {};
+        if (!d.archivedCats) d.archivedCats = {};
+        const changed = migrateData(d);
+        setData(d);
+        if (changed && res.data) {
+          await sb.from("budget_data").update({ data: d, updated_at: new Date().toISOString() }).eq("user_id", user.id);
+        }
+      } catch(e) { setData(JSON.parse(JSON.stringify(EMPTY_DATA))); }
     })();
   }, [user.id]);
 
@@ -390,6 +453,11 @@ function Budget({ user, onLogout }) {
 
   if (!data) return <div className="flex h-screen items-center justify-center bg-gray-50 text-gray-400 text-sm">A carregar dados...</div>;
 
+  // ── Categorias (base + personalizadas, menos arquivadas) ──
+  const catsOf = sk => SECTIONS[sk].items.concat(data.customCats[sk]||[]);
+  const isArchived = (sk,cat) => (data.archivedCats[sk]||[]).indexOf(cat)>=0;
+  const activeCatsOf = sk => catsOf(sk).filter(c=>!isArchived(sk,c));
+
   // ── Derived ──
   const accTxDelta = (accId, txs) => {
     let delta = 0;
@@ -409,8 +477,13 @@ function Budget({ user, onLogout }) {
   });
 
   const real = {};
-  Object.keys(SECTIONS).forEach(sk => { real[sk]={}; SECTIONS[sk].items.forEach(c=>{ real[sk][c]=0; }); });
-  monthTxs.forEach(t => { if(!isTransfer(t) && real[t.sk] && real[t.sk][t.cat]!==undefined) real[t.sk][t.cat]+=t.amt; });
+  Object.keys(SECTIONS).forEach(sk => { real[sk]={}; catsOf(sk).forEach(c=>{ real[sk][c]=0; }); });
+  monthTxs.forEach(t => {
+    if(isTransfer(t)) return;
+    if(!real[t.sk]) return;
+    if(real[t.sk][t.cat]===undefined) real[t.sk][t.cat]=0;
+    real[t.sk][t.cat]+=t.amt;
+  });
 
   const bp = (sk,cat) => {
     const y = data.budgets[year]; if (!y) return 0;
@@ -418,9 +491,19 @@ function Budget({ user, onLogout }) {
     const s = m[sk]; if (!s) return 0;
     return s[cat]||0;
   };
+  const allCatsWithData = sk => {
+    const set = {};
+    catsOf(sk).forEach(c=>{ set[c]=true; });
+    Object.keys(real[sk]).forEach(c=>{ set[c]=true; });
+    return Object.keys(set);
+  };
   const stot = sk => {
     let p=0,r=0;
-    SECTIONS[sk].items.forEach(c=>{ const s=iSign(sk,c); p+=s*bp(sk,c); r+=s*real[sk][c]; });
+    allCatsWithData(sk).forEach(c=>{
+      const s=iSign(sk,c);
+      p+=s*bp(sk,c);
+      r+=s*(real[sk][c]||0);
+    });
     return {p:p,r:r};
   };
   const tR=stot("rendimentos"), tP=stot("poupancas"), tE=stot("essenciais"), tV=stot("variaveis");
@@ -429,6 +512,7 @@ function Budget({ user, onLogout }) {
   let saldoAcc = 0;
   data.txs.forEach(t=>{
     if(isTransfer(t)) return;
+    if(!SECTIONS[t.sk]) return;
     const d=new Date(t.date+"T12:00:00"), ty=d.getFullYear(), tm=d.getMonth();
     if(ty<year||(ty===year&&tm<=month)) saldoAcc+=SECTIONS[t.sk].sign*iSign(t.sk,t.cat)*t.amt;
   });
@@ -461,10 +545,22 @@ function Budget({ user, onLogout }) {
     const n=data.txs.filter(t=>t.accFrom===a.id||t.accTo===a.id).length;
     setConfirmDel({type:"acc", id:a.id, label:a.name, detail:n>0?(n+" lançamento(s) ligado(s) — não serão apagados"):"Sem lançamentos ligados"});
   };
+  const askDelMulti = () => {
+    const ids = Object.keys(selTxs).filter(id=>selTxs[id]);
+    if (!ids.length) { showToast("⚠️ Nenhum lançamento selecionado"); return; }
+    setConfirmDel({type:"multi", ids:ids, label:ids.length+" lançamentos", detail:"Esta ação apaga todos os selecionados"});
+  };
   const execDelete = () => {
     const snap = JSON.parse(JSON.stringify(data));
-    if (confirmDel.type==="tx") persist(Object.assign({}, data, {txs:data.txs.filter(t=>t.id!==confirmDel.id)}));
-    else persist(Object.assign({}, data, {accounts:data.accounts.filter(a=>a.id!==confirmDel.id)}));
+    if (confirmDel.type==="tx") {
+      persist(Object.assign({}, data, {txs:data.txs.filter(t=>t.id!==confirmDel.id)}));
+    } else if (confirmDel.type==="multi") {
+      const ids = confirmDel.ids;
+      persist(Object.assign({}, data, {txs:data.txs.filter(t=>ids.indexOf(t.id)<0)}));
+      setSelMode(false); setSelTxs({});
+    } else {
+      persist(Object.assign({}, data, {accounts:data.accounts.filter(a=>a.id!==confirmDel.id)}));
+    }
     setConfirmDel(null);
     setUndoSnap(snap);
     if (undoTimer.current) clearTimeout(undoTimer.current);
@@ -477,9 +573,27 @@ function Budget({ user, onLogout }) {
     showToast("↩️ Recuperado!");
   };
 
+  // edição de lançamento
+  const openEditTx = t => {
+    setEditTx({id:t.id, sk:t.sk, cat:t.cat, amt:t.amt.toString().replace(".",","), date:t.date, desc:t.desc||"", accFrom:t.accFrom||"", accTo:t.accTo||""});
+  };
+  const saveEditTx = () => {
+    const amt = pn(editTx.amt);
+    if (!amt) { showToast("⚠️ Insere um valor válido"); return; }
+    const txs = data.txs.map(t=>{
+      if (t.id!==editTx.id) return t;
+      const nt = {id:t.id, date:editTx.date, amt:amt, desc:editTx.desc.trim(), sk:editTx.sk, cat:editTx.cat};
+      if (editTx.accFrom) nt.accFrom=editTx.accFrom;
+      if (editTx.accTo)   nt.accTo=editTx.accTo;
+      return nt;
+    });
+    persist(Object.assign({}, data, {txs:txs}));
+    setEditTx(null); showToast("💾 Lançamento atualizado");
+  };
+
   const enterEditMode = () => {
     const draft={};
-    Object.keys(SECTIONS).forEach(sk=>SECTIONS[sk].items.forEach(c=>{ const v=bp(sk,c); if(v>0) draft[sk+"|"+c]=v.toString(); }));
+    Object.keys(SECTIONS).forEach(sk=>allCatsWithData(sk).forEach(c=>{ const v=bp(sk,c); if(v>0) draft[sk+"|"+c]=v.toString(); }));
     setBudgetDraft(draft); setEditMode(true);
   };
   const saveBudget = () => {
@@ -487,7 +601,8 @@ function Budget({ user, onLogout }) {
     if(!nb[year]) nb[year]={};
     if(!nb[year][month]) nb[year][month]={};
     Object.keys(budgetDraft).forEach(key=>{
-      const parts=key.split("|"), sk=parts[0], cat=parts[1];
+      const idx = key.indexOf("|");
+      const sk = key.slice(0,idx), cat = key.slice(idx+1);
       if(!nb[year][month][sk]) nb[year][month][sk]={};
       const v=pn(budgetDraft[key]);
       if(v>0) nb[year][month][sk][cat]=v;
@@ -508,6 +623,27 @@ function Budget({ user, onLogout }) {
     showToast("📋 Copiado com sucesso");
   };
   const getBD=(sk,cat)=>{ const k=sk+"|"+cat; return (k in budgetDraft)?budgetDraft[k]:(bp(sk,cat)>0?bp(sk,cat).toString():""); };
+
+  // categorias personalizadas
+  const addCustomCat = sk => {
+    const name = (newCatName[sk]||"").trim();
+    if (!name) { showToast("⚠️ Escreve um nome"); return; }
+    if (catsOf(sk).indexOf(name)>=0) { showToast("⚠️ Essa categoria já existe"); return; }
+    const cc = JSON.parse(JSON.stringify(data.customCats));
+    if (!cc[sk]) cc[sk]=[];
+    cc[sk].push(name);
+    persist(Object.assign({}, data, {customCats:cc}));
+    setNewCatName(Object.assign({}, newCatName, {[sk]:""}));
+    showToast("✅ Categoria adicionada");
+  };
+  const toggleArchiveCat = (sk, cat) => {
+    const ac = JSON.parse(JSON.stringify(data.archivedCats));
+    if (!ac[sk]) ac[sk]=[];
+    const idx = ac[sk].indexOf(cat);
+    if (idx>=0) ac[sk].splice(idx,1);
+    else ac[sk].push(cat);
+    persist(Object.assign({}, data, {archivedCats:ac}));
+  };
 
   const snapshotWealth = (accounts,txs) => {
     const total=accounts.reduce((s,a)=>s+(isAuto(a)?a.base+accTxDelta(a.id,txs):a.base),0);
@@ -576,8 +712,11 @@ function Budget({ user, onLogout }) {
     const out = [];
     rows.forEach(r=>{
       const sk = mapTipo(r["tipo"]||r["seccao"]||"");
-      let cat = r["categoria"]||"Outros";
-      if (SECTIONS[sk].items.indexOf(cat)===-1) cat="Outros";
+      let cat = r["categoria"]||"";
+      // aplica renomeações antigas
+      const rn = RENAME_MAP[sk];
+      if (rn && rn[cat]) cat = rn[cat];
+      if (catsOf(sk).indexOf(cat)<0) cat = catsOf(sk)[catsOf(sk).length-1];
       const amt = parseVal(r["valor"]);
       if (!amt) return;
       const date = parseDate(r["data"]);
@@ -615,7 +754,7 @@ function Budget({ user, onLogout }) {
     setImportRows(rows=>rows.map(r=>{
       if (r._id!==id) return r;
       const nr = Object.assign({}, r); nr[field]=val;
-      if (field==="sk" && SECTIONS[val].items.indexOf(nr.cat)===-1) nr.cat="Outros";
+      if (field==="sk" && catsOf(val).indexOf(nr.cat)<0) nr.cat=catsOf(val)[catsOf(val).length-1];
       return nr;
     }));
   };
@@ -639,6 +778,7 @@ function Budget({ user, onLogout }) {
 
   const nSel = importRows.filter(r=>importSel[r._id]).length;
   const nDup = importRows.filter(r=>r._dup).length;
+  const nSelTx = Object.keys(selTxs).filter(id=>selTxs[id]).length;
 
   const txDisplay = t => {
     let accInfo="";
@@ -646,7 +786,8 @@ function Budget({ user, onLogout }) {
     else if(t.accFrom) accInfo=accNameOf(t.accFrom);
     else if(t.accTo)   accInfo=accNameOf(t.accTo);
     if(isTransfer(t)) return {bg:TRANSFER.bg, emoji:TRANSFER.emoji, color:TRANSFER.color, sign:"", accInfo:accInfo};
-    const s=SECTIONS[t.sk], ds=s.sign*iSign(t.sk,t.cat);
+    const s=SECTIONS[t.sk]||SECTIONS.variaveis;
+    const ds=s.sign*iSign(t.sk,t.cat);
     return {bg:s.bg, emoji:s.emoji, color:ds>0?"#16a34a":"#dc2626", sign:ds>0?"+":"-", accInfo:accInfo};
   };
 
@@ -663,13 +804,24 @@ function Budget({ user, onLogout }) {
     const d = txDisplay(t);
     return (
       <div className="px-4 py-2.5 border-b border-gray-50 flex items-center gap-3">
-        <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-sm" style={{backgroundColor:d.bg}}>{d.emoji}</div>
+        {selMode&&props.deletable ? (
+          <input type="checkbox" checked={!!selTxs[t.id]}
+            onChange={e=>{ const v=e.target.checked; setSelTxs(prev=>Object.assign({},prev,{[t.id]:v})); }}
+            className="flex-shrink-0"/>
+        ) : (
+          <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-sm" style={{backgroundColor:d.bg}}>{d.emoji}</div>
+        )}
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-gray-700 truncate">{t.desc||t.cat}</div>
           <div className="text-xs text-gray-400 truncate">{(isTransfer(t)?"":t.cat+" · ")+(d.accInfo?d.accInfo+" · ":"")+t.date.slice(5).replace("-","/")}</div>
         </div>
-        <div className={"text-sm font-semibold flex-shrink-0"+(props.deletable?" mr-1":"")} style={{color:d.color}}>{d.sign}{fmt(t.amt)}</div>
-        {props.deletable ? <button onClick={()=>askDelTx(t)} className="text-gray-300 hover:text-red-400 text-xl leading-none flex-shrink-0 px-1">×</button> : null}
+        <div className="text-sm font-semibold flex-shrink-0" style={{color:d.color}}>{d.sign}{fmt(t.amt)}</div>
+        {props.deletable&&!selMode ? (
+          <div className="flex items-center flex-shrink-0">
+            <button onClick={()=>openEditTx(t)} className="text-gray-300 hover:text-blue-500 px-1 text-sm">✏️</button>
+            <button onClick={()=>askDelTx(t)} className="text-gray-300 hover:text-red-400 text-xl leading-none px-1">×</button>
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -690,7 +842,7 @@ function Budget({ user, onLogout }) {
         <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{backgroundColor:"rgba(0,0,0,0.4)"}} onClick={()=>setConfirmDel(null)}>
           <div className="bg-white rounded-2xl shadow-xl p-5 w-full max-w-sm" onClick={e=>e.stopPropagation()}>
             <div className="text-2xl mb-2">{confirmDel.type==="acc"?"💼":"🗑️"}</div>
-            <div className="font-semibold text-gray-800 text-sm mb-1">Apagar {confirmDel.type==="acc"?"a conta":"o lançamento"} "{confirmDel.label}"?</div>
+            <div className="font-semibold text-gray-800 text-sm mb-1">Apagar {confirmDel.type==="acc"?"a conta":(confirmDel.type==="multi"?"":"o lançamento")} "{confirmDel.label}"?</div>
             <div className="text-xs text-gray-500 mb-4">{confirmDel.detail}</div>
             <div className="flex gap-2">
               <button onClick={()=>setConfirmDel(null)} className="flex-1 bg-gray-100 text-gray-700 rounded-xl py-2.5 text-sm font-medium">Cancelar</button>
@@ -700,10 +852,124 @@ function Budget({ user, onLogout }) {
         </div>
       ) : null}
 
+      {editTx ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4 overflow-y-auto py-8" style={{backgroundColor:"rgba(0,0,0,0.4)"}} onClick={()=>setEditTx(null)}>
+          <div className="bg-white rounded-2xl shadow-xl p-5 w-full max-w-sm" onClick={e=>e.stopPropagation()}>
+            <div className="font-semibold text-gray-800 text-sm mb-4">✏️ Editar lançamento</div>
+            {editTx.sk!=="transfer" ? (
+              <div className="space-y-3">
+                <div>
+                  <div className="text-xs text-gray-400 mb-1">Secção</div>
+                  <select value={editTx.sk} onChange={e=>{
+                      const sk=e.target.value;
+                      const cat = catsOf(sk).indexOf(editTx.cat)>=0 ? editTx.cat : activeCatsOf(sk)[0];
+                      setEditTx(Object.assign({},editTx,{sk:sk,cat:cat}));
+                    }}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white outline-none">
+                    {Object.keys(SECTIONS).map(k=><option key={k} value={k}>{SECTIONS[k].emoji+" "+SECTIONS[k].label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-400 mb-1">Categoria</div>
+                  <select value={editTx.cat} onChange={e=>setEditTx(Object.assign({},editTx,{cat:e.target.value}))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white outline-none">
+                    {catsOf(editTx.sk).map(c=><option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+            ) : <div className="text-xs text-gray-400 mb-2">🔁 Transferência entre contas</div>}
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div>
+                <div className="text-xs text-gray-400 mb-1">Valor (€)</div>
+                <input type="text" inputMode="decimal" value={editTx.amt}
+                  onChange={e=>setEditTx(Object.assign({},editTx,{amt:e.target.value}))}
+                  onKeyDown={e=>{if(e.key==="Enter")saveEditTx();}}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-400"/>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 mb-1">Data</div>
+                <input type="date" value={editTx.date}
+                  onChange={e=>setEditTx(Object.assign({},editTx,{date:e.target.value}))}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-400"/>
+              </div>
+            </div>
+            <div className="mt-3">
+              <div className="text-xs text-gray-400 mb-1">Descrição</div>
+              <input type="text" value={editTx.desc}
+                onChange={e=>setEditTx(Object.assign({},editTx,{desc:e.target.value}))}
+                onKeyDown={e=>{if(e.key==="Enter")saveEditTx();}}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-400"/>
+            </div>
+            {data.accounts.length>0 ? (
+              <div className="grid grid-cols-2 gap-3 mt-3">
+                <div>
+                  <div className="text-xs text-gray-400 mb-1">Sai de</div>
+                  <AccSelect value={editTx.accFrom} onChange={v=>setEditTx(Object.assign({},editTx,{accFrom:v}))} placeholder="—"/>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-400 mb-1">Entra em</div>
+                  <AccSelect value={editTx.accTo} onChange={v=>setEditTx(Object.assign({},editTx,{accTo:v}))} placeholder="—"/>
+                </div>
+              </div>
+            ) : null}
+            <div className="flex gap-2 mt-5">
+              <button onClick={()=>setEditTx(null)} className="flex-1 bg-gray-100 text-gray-700 rounded-xl py-2.5 text-sm font-medium">Cancelar</button>
+              <button onClick={saveEditTx} className="flex-1 text-white rounded-xl py-2.5 text-sm font-semibold" style={{backgroundColor:"#2563eb"}}>💾 Guardar</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {catMgr ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4 overflow-y-auto py-8" style={{backgroundColor:"rgba(0,0,0,0.4)"}} onClick={()=>setCatMgr(false)}>
+          <div className="bg-white rounded-2xl shadow-xl p-5 w-full max-w-md max-h-full overflow-y-auto" onClick={e=>e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <div className="font-semibold text-gray-800 text-sm">⚙️ Gerir categorias</div>
+              <button onClick={()=>setCatMgr(false)} className="text-gray-400 text-lg">✕</button>
+            </div>
+            <div className="text-xs text-gray-400 mb-4">📦 = arquivada (não aparece em novos lançamentos, mas o histórico mantém-se)</div>
+            {Object.keys(SECTIONS).map(sk=>{
+              const s = SECTIONS[sk];
+              return (
+                <div key={sk} className="mb-5">
+                  <div className="font-semibold text-xs mb-2 px-2 py-1.5 rounded-lg" style={{backgroundColor:s.bg, color:s.text}}>{s.emoji} {s.label}</div>
+                  <div className="space-y-1">
+                    {catsOf(sk).map(c=>{
+                      const arch = isArchived(sk,c);
+                      const custom = (data.customCats[sk]||[]).indexOf(c)>=0;
+                      return (
+                        <div key={c} className="flex items-center gap-2 px-2 py-1">
+                          <span className={"flex-1 text-xs "+(arch?"line-through text-gray-300":"text-gray-700")}>{c}{custom?" ✨":""}</span>
+                          <button onClick={()=>toggleArchiveCat(sk,c)}
+                            className={"text-xs px-2 py-0.5 rounded border "+(arch?"border-green-200 text-green-600":"border-gray-200 text-gray-400")}>
+                            {arch?"↩️ Restaurar":"📦 Arquivar"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="flex gap-2 mt-2 px-2">
+                    <input type="text" value={newCatName[sk]||""}
+                      onChange={e=>setNewCatName(Object.assign({},newCatName,{[sk]:e.target.value}))}
+                      onKeyDown={e=>{if(e.key==="Enter")addCustomCat(sk);}}
+                      placeholder="Nova categoria..."
+                      className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-blue-400"/>
+                    <button onClick={()=>addCustomCat(sk)} className="text-white rounded-lg px-3 py-1.5 text-xs font-semibold" style={{backgroundColor:s.color}}>+ Adicionar</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
       {showMenu ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center px-4 pb-24" style={{backgroundColor:"rgba(0,0,0,0.3)"}} onClick={()=>setShowMenu(false)}>
           <div className="bg-white rounded-2xl shadow-xl p-4 w-full max-w-sm" onClick={e=>e.stopPropagation()}>
             <div className="text-xs text-gray-400 mb-3 text-center truncate">{user.email}</div>
+            <button onClick={()=>{setCatMgr(true);setShowMenu(false);}} className="w-full text-left px-3 py-2.5 rounded-xl text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 mb-1">
+              <span>⚙️</span> Gerir categorias
+            </button>
             <button onClick={()=>{exportCSV();setShowMenu(false);}} className="w-full text-left px-3 py-2.5 rounded-xl text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 mb-1">
               <span>📤</span> Exportar para Excel (CSV)
             </button>
@@ -731,7 +997,7 @@ function Budget({ user, onLogout }) {
             </button>
           </div>
         </div>
-        {tab!=="contas"&&tab!=="importar" ? (
+        {tab!=="contas"&&tab!=="importar"&&!(tab==="graficos"&&chartView==="ano") ? (
           <div className="overflow-x-auto">
             <div className="flex gap-1 px-4 pb-2 max-w-xl mx-auto" style={{minWidth:"max-content"}}>
               {MS.map((m,i)=>(
@@ -760,7 +1026,7 @@ function Budget({ user, onLogout }) {
             </div>
             <div className="grid grid-cols-2 gap-3">
               {[{label:"Rendimento Líquido",tot:tR,color:"#16a34a",pos:true},{label:"Poupanças",tot:tP,color:"#2563eb",pos:true},
-                {label:"Essenciais",tot:tE,color:"#ea580c",pos:false},{label:"Variáveis",tot:tV,color:"#dc2626",pos:false}].map(c=>{
+                {label:"Recorrentes",tot:tE,color:"#ea580c",pos:false},{label:"Variáveis",tot:tV,color:"#dc2626",pos:false}].map(c=>{
                 const over=!c.pos&&c.tot.r>c.tot.p&&c.tot.p>0, diff=Math.abs(c.tot.r-c.tot.p);
                 return (
                   <div key={c.label} className="bg-white rounded-xl p-3 shadow-sm">
@@ -794,7 +1060,7 @@ function Budget({ user, onLogout }) {
                   {Object.keys(SECTIONS).map(sk=>{
                     const s = SECTIONS[sk];
                     return (
-                      <button key={sk} onClick={()=>{setFormSection(sk);setFormCat(s.items[0]);setFormAccFrom("");setFormAccTo("");}}
+                      <button key={sk} onClick={()=>{setFormSection(sk);setFormCat(activeCatsOf(sk)[0]);setFormAccFrom("");setFormAccTo("");}}
                         className="text-xs py-2 px-2 rounded-lg border font-medium text-left"
                         style={formSection===sk?{backgroundColor:s.color,borderColor:s.color,color:"white"}:{backgroundColor:"white",borderColor:"#e5e7eb",color:"#374151"}}>
                         {s.emoji} {s.label}
@@ -823,7 +1089,7 @@ function Budget({ user, onLogout }) {
                   <div className="mb-3">
                     <div className="text-xs text-gray-400 mb-1.5">Categoria</div>
                     <select value={formCat} onChange={e=>setFormCat(e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none">
-                      {SECTIONS[formSection].items.map(c=><option key={c} value={c}>{c+(isDed(formSection,c)?" (desconto)":"")}</option>)}
+                      {activeCatsOf(formSection).map(c=><option key={c} value={c}>{c+(isDed(formSection,c)?" (desconto)":"")}</option>)}
                     </select>
                   </div>
                   {data.accounts.length>0 ? (
@@ -846,18 +1112,37 @@ function Budget({ user, onLogout }) {
                 <div><div className="text-xs text-gray-400 mb-1.5">Valor (€)</div>
                   <input type="text" inputMode="decimal" value={formAmount} onChange={e=>setFormAmount(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addTx();}} placeholder="0,00" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
                 <div><div className="text-xs text-gray-400 mb-1.5">Data</div>
-                  <input type="date" value={formDate} onChange={e=>setFormDate(e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
+                  <input type="date" value={formDate} onChange={e=>setFormDate(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addTx();}} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
               </div>
               <div className="mb-3"><div className="text-xs text-gray-400 mb-1.5">Descrição (opcional)</div>
                 <input type="text" value={formDesc} onChange={e=>setFormDesc(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addTx();}} placeholder={formSection==="transfer"?"ex: reforço poupança":"ex: Pingo Doce"} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:border-blue-400 outline-none"/></div>
               <button onClick={addTx} className="w-full text-white rounded-xl py-3 font-semibold text-sm" style={{backgroundColor:formSection==="transfer"?TRANSFER.color:"#2563eb"}}>
-                {formSection==="transfer"?"🔁 Registar Transferência":"➕ Adicionar Lançamento"}
+                {formSection==="transfer"?"🔁 Registar Transferência":"➕ Adicionar Lançamento (Enter)"}
               </button>
             </div>
             {monthTxs.length>0 ? (
               <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-                <div className="px-4 py-3 font-semibold text-sm text-gray-700 border-b border-gray-100">{MS[month]} {year} — {monthTxs.length} lançamento{monthTxs.length!==1?"s":""}</div>
+                <div className="px-4 py-3 flex justify-between items-center border-b border-gray-100">
+                  <div className="font-semibold text-sm text-gray-700">{MS[month]} {year} — {monthTxs.length} lançamento{monthTxs.length!==1?"s":""}</div>
+                  <button onClick={()=>{setSelMode(!selMode);setSelTxs({});}}
+                    className={"text-xs font-medium "+(selMode?"text-red-500":"text-blue-600")}>
+                    {selMode?"✕ Cancelar":"☑️ Selecionar"}
+                  </button>
+                </div>
                 {monthTxs.slice().reverse().map(t=><TxRow key={t.id} t={t} deletable={true}/>)}
+                {selMode ? (
+                  <div className="px-4 py-3 bg-gray-50 flex items-center justify-between">
+                    <div className="text-xs text-gray-500">{nSelTx} selecionado{nSelTx!==1?"s":""}</div>
+                    <div className="flex gap-2">
+                      <button onClick={()=>{ const s={}; monthTxs.forEach(t=>{s[t.id]=true;}); setSelTxs(s); }}
+                        className="text-xs text-blue-600 border border-blue-200 rounded-lg px-3 py-1.5">Todos</button>
+                      <button onClick={askDelMulti} disabled={nSelTx===0}
+                        className="text-xs text-white rounded-lg px-3 py-1.5 font-semibold disabled:opacity-40" style={{backgroundColor:"#dc2626"}}>
+                        🗑️ Apagar ({nSelTx})
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -881,7 +1166,10 @@ function Budget({ user, onLogout }) {
             {Object.keys(SECTIONS).map(sk=>{
               const s = SECTIONS[sk];
               const tot=stot(sk);
-              const rows=editMode?s.items:s.items.filter(c=>bp(sk,c)>0||real[sk][c]>0);
+              const allCats = allCatsWithData(sk);
+              const rows = editMode
+                ? allCats.filter(c=>!isArchived(sk,c)||bp(sk,c)>0||(real[sk][c]||0)>0)
+                : allCats.filter(c=>bp(sk,c)>0||(real[sk][c]||0)>0);
               if(!editMode&&rows.length===0) return null;
               return (
                 <div key={sk} className="bg-white rounded-2xl shadow-sm overflow-hidden">
@@ -893,15 +1181,15 @@ function Budget({ user, onLogout }) {
                     <div className="text-xs text-gray-400">Categoria</div><div className="text-xs text-gray-400 text-right">Previsto</div><div className="text-xs text-gray-400 text-right">Realizado</div>
                   </div>
                   {rows.map(c=>{
-                    const ded=isDed(sk,c), prev=bp(sk,c), rl=real[sk][c];
+                    const ded=isDed(sk,c), prev=bp(sk,c), rl=real[sk][c]||0;
                     const ps=ded?-prev:prev, rs=ded?-rl:rl, dev=rs-ps;
                     const isOver=(s.sign<0||ded)&&dev>0&&prev>0;
                     return (
                       <div key={c} className="grid px-4 py-2 border-b border-gray-50 items-center" style={{gridTemplateColumns:COL}}>
-                        <div className="text-xs pr-1 leading-tight" style={{color:ded?"#b45309":"#374151"}}>{ded?<span className="text-amber-500 mr-1">↓</span>:null}{c}</div>
+                        <div className="text-xs pr-1 leading-tight" style={{color:ded?"#b45309":"#374151"}}>{ded?<span className="text-amber-500 mr-1">↓</span>:null}{c}{isArchived(sk,c)?" 📦":""}</div>
                         <div className="text-right">
                           {editMode
-                            ? <input type="text" inputMode="decimal" value={getBD(sk,c)} onChange={e=>setBudgetDraft(b=>Object.assign({},b,{[sk+"|"+c]:e.target.value}))} placeholder="0" className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:border-blue-400 outline-none"/>
+                            ? <input type="text" inputMode="decimal" value={getBD(sk,c)} onChange={e=>{const v=e.target.value; setBudgetDraft(b=>Object.assign({},b,{[sk+"|"+c]:v}));}} placeholder="0" className="w-full text-right border border-gray-200 rounded px-2 py-1 text-sm focus:border-blue-400 outline-none"/>
                             : <span className="text-xs text-gray-400">{prev>0?(ded?"-":"")+fmt(prev):"—"}</span>}
                         </div>
                         <div className="text-right">
@@ -950,7 +1238,7 @@ function Budget({ user, onLogout }) {
               </div>
               {showAccForm ? (
                 <div className="px-4 py-3 bg-blue-50 border-b border-blue-100 space-y-2.5">
-                  <input type="text" value={accName} onChange={e=>setAccName(e.target.value)} placeholder="Nome da conta (ex: CGD à ordem)" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none"/>
+                  <input type="text" value={accName} onChange={e=>setAccName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addAccount();}} placeholder="Nome da conta (ex: CGD à ordem)" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:border-blue-400 outline-none"/>
                   <div className="grid grid-cols-4 gap-1.5">
                     {Object.keys(ACC_TYPES).map(tk=>{
                       const t = ACC_TYPES[tk];
@@ -1101,7 +1389,7 @@ function Budget({ user, onLogout }) {
                               </select>
                               <select value={r.cat} onChange={e=>updateImportRow(r._id,"cat",e.target.value)}
                                 className="border border-gray-200 rounded px-2 py-1 text-xs bg-white">
-                                {(SECTIONS[r.sk]||SECTIONS.variaveis).items.map(c=><option key={c} value={c}>{c}</option>)}
+                                {catsOf(r.sk).map(c=><option key={c} value={c}>{c}</option>)}
                               </select>
                             </div>
                           </div>
@@ -1118,55 +1406,172 @@ function Budget({ user, onLogout }) {
           </div>
         ) : null}
 
-        {tab==="graficos" ? (()=>{
-          const pieData=[{name:"Poupanças",value:tP.r,color:"#2563eb"},{name:"Essenciais",value:tE.r,color:"#ea580c"},{name:"Variáveis",value:tV.r,color:"#dc2626"}].filter(d=>d.value>0);
-          const barData=Object.keys(SECTIONS).map(sk=>{
-            const s = SECTIONS[sk], t=stot(sk);
-            const parts = s.label.split(" ");
-            return {name:s.emoji+" "+parts[parts.length-1], previsto:+Math.abs(t.p).toFixed(2), realizado:+Math.abs(t.r).toFixed(2)};
-          });
-          const topCats=[];
-          Object.keys(SECTIONS).forEach(sk=>{
-            const s = SECTIONS[sk];
-            if(s.sign<0) s.items.forEach(c=>{ const r=real[sk][c]; if(r>0) topCats.push({name:c,value:r,color:s.color}); });
-          });
-          topCats.sort((a,b)=>b.value-a.value);
-          const totalOut=tE.r+tV.r+tP.r;
-          return (
-            <div className="space-y-4">
-              {pieData.length===0&&topCats.length===0 ? <div className="bg-white rounded-2xl shadow-sm p-8 text-center text-gray-400 text-sm">Sem dados para {MS[month]} {year}</div> : null}
-              {pieData.length>0 ? (
-                <div className="bg-white rounded-2xl shadow-sm p-4">
-                  <h3 className="font-semibold text-sm text-gray-700 mb-3">Distribuição de Saídas</h3>
-                  <SimplePie data={pieData}/>
-                </div>
-              ) : null}
-              {barData.some(d=>d.previsto>0||d.realizado>0) ? (
-                <div className="bg-white rounded-2xl shadow-sm p-4">
-                  <h3 className="font-semibold text-sm text-gray-700 mb-3">Previsto vs Realizado</h3>
-                  <SimpleBars data={barData}/>
-                </div>
-              ) : null}
-              {topCats.length>0 ? (
-                <div className="bg-white rounded-2xl shadow-sm p-4">
-                  <h3 className="font-semibold text-sm text-gray-700 mb-3">Top Categorias</h3>
-                  <div className="space-y-2.5">
-                    {topCats.slice(0,8).map(c=>{
-                      const pct=totalOut>0?c.value/totalOut*100:0;
-                      return (
-                        <div key={c.name} className="flex items-center gap-2">
-                          <div className="text-xs text-gray-600 truncate flex-shrink-0" style={{width:120}}>{c.name}</div>
-                          <div className="flex-1 bg-gray-100 rounded-full h-1.5"><div className="h-1.5 rounded-full" style={{width:pct+"%",backgroundColor:c.color}}/></div>
-                          <div className="text-xs font-medium text-gray-700 text-right flex-shrink-0" style={{width:70}}>{fmt(c.value)}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
+        {tab==="graficos" ? (
+          <div className="space-y-4">
+            <div className="flex bg-gray-100 rounded-xl p-1">
+              <button onClick={()=>setChartView("mes")}
+                className={"flex-1 py-1.5 rounded-lg text-xs font-semibold "+(chartView==="mes"?"bg-white shadow-sm text-gray-800":"text-gray-400")}>
+                📅 Mês ({MS[month]})
+              </button>
+              <button onClick={()=>setChartView("ano")}
+                className={"flex-1 py-1.5 rounded-lg text-xs font-semibold "+(chartView==="ano"?"bg-white shadow-sm text-gray-800":"text-gray-400")}>
+                🗓️ Ano ({year})
+              </button>
             </div>
-          );
-        })() : null}
+
+            {chartView==="mes" ? (()=>{
+              const pieData=[{name:"Poupanças",value:tP.r,color:"#2563eb"},{name:"Recorrentes",value:tE.r,color:"#ea580c"},{name:"Variáveis",value:tV.r,color:"#dc2626"}].filter(d=>d.value>0);
+              const barData=Object.keys(SECTIONS).map(sk=>{
+                const s = SECTIONS[sk], t=stot(sk);
+                const parts = s.label.split(" ");
+                return {name:s.emoji+" "+parts[parts.length-1], previsto:+Math.abs(t.p).toFixed(2), realizado:+Math.abs(t.r).toFixed(2)};
+              });
+              const COLORS = ["#ea580c","#f59e0b","#84cc16","#10b981","#06b6d4","#3b82f6","#8b5cf6","#ec4899","#f43f5e","#64748b"];
+              const sectionPie = sk => {
+                const items=[];
+                Object.keys(real[sk]).forEach(c=>{ const v=real[sk][c]||0; if(v>0) items.push({name:c, value:v}); });
+                items.sort((a,b)=>b.value-a.value);
+                return items.map((it,i)=>Object.assign({},it,{color:COLORS[i%COLORS.length]}));
+              };
+              const pieE = sectionPie("essenciais");
+              const pieV = sectionPie("variaveis");
+              const topCats=[];
+              Object.keys(SECTIONS).forEach(sk=>{
+                const s = SECTIONS[sk];
+                if(s.sign<0) Object.keys(real[sk]).forEach(c=>{ const r=real[sk][c]||0; if(r>0) topCats.push({name:c,value:r,color:s.color}); });
+              });
+              topCats.sort((a,b)=>b.value-a.value);
+              const totalOut=tE.r+tV.r+tP.r;
+              return (
+                <div className="space-y-4">
+                  {pieData.length===0&&topCats.length===0 ? <div className="bg-white rounded-2xl shadow-sm p-8 text-center text-gray-400 text-sm">Sem dados para {MS[month]} {year}</div> : null}
+                  {pieData.length>0 ? (
+                    <div className="bg-white rounded-2xl shadow-sm p-4">
+                      <h3 className="font-semibold text-sm text-gray-700 mb-3">Distribuição de Saídas</h3>
+                      <SimplePie data={pieData}/>
+                    </div>
+                  ) : null}
+                  {pieE.length>0 ? (
+                    <div className="bg-white rounded-2xl shadow-sm p-4">
+                      <h3 className="font-semibold text-sm text-gray-700 mb-3">🏠 Despesas Recorrentes — por categoria</h3>
+                      <SimplePie data={pieE}/>
+                    </div>
+                  ) : null}
+                  {pieV.length>0 ? (
+                    <div className="bg-white rounded-2xl shadow-sm p-4">
+                      <h3 className="font-semibold text-sm text-gray-700 mb-3">🛍️ Despesas Variáveis — por categoria</h3>
+                      <SimplePie data={pieV}/>
+                    </div>
+                  ) : null}
+                  {barData.some(d=>d.previsto>0||d.realizado>0) ? (
+                    <div className="bg-white rounded-2xl shadow-sm p-4">
+                      <h3 className="font-semibold text-sm text-gray-700 mb-3">Previsto vs Realizado</h3>
+                      <SimpleBars data={barData}/>
+                    </div>
+                  ) : null}
+                  {topCats.length>0 ? (
+                    <div className="bg-white rounded-2xl shadow-sm p-4">
+                      <h3 className="font-semibold text-sm text-gray-700 mb-3">Top Categorias</h3>
+                      <div className="space-y-2.5">
+                        {topCats.slice(0,8).map(c=>{
+                          const pct=totalOut>0?c.value/totalOut*100:0;
+                          return (
+                            <div key={c.name} className="flex items-center gap-2">
+                              <div className="text-xs text-gray-600 truncate flex-shrink-0" style={{width:120}}>{c.name}</div>
+                              <div className="flex-1 bg-gray-100 rounded-full h-1.5"><div className="h-1.5 rounded-full" style={{width:pct+"%",backgroundColor:c.color}}/></div>
+                              <div className="text-xs font-medium text-gray-700 text-right flex-shrink-0" style={{width:70}}>{fmt(c.value)}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })() : (()=>{
+              // ── Vista anual ──
+              const yearTxs = data.txs.filter(t=>{
+                if(isTransfer(t)) return false;
+                const d=new Date(t.date+"T12:00:00");
+                return d.getFullYear()===year;
+              });
+              const byMonth = { rendimentos:Array(12).fill(0), poupancas:Array(12).fill(0), essenciais:Array(12).fill(0), variaveis:Array(12).fill(0) };
+              const yearCats = {};
+              yearTxs.forEach(t=>{
+                if(!SECTIONS[t.sk]) return;
+                const mo=new Date(t.date+"T12:00:00").getMonth();
+                byMonth[t.sk][mo]+=iSign(t.sk,t.cat)*t.amt;
+                if(SECTIONS[t.sk].sign<0){
+                  if(!yearCats[t.cat]) yearCats[t.cat]={value:0,color:SECTIONS[t.sk].color};
+                  yearCats[t.cat].value+=t.amt;
+                }
+              });
+              const despMes = MS.map((m,i)=>({m:m, v:byMonth.essenciais[i]+byMonth.variaveis[i]}));
+              const rendMes = MS.map((m,i)=>({m:m, v:byMonth.rendimentos[i]}));
+              const poupMes = MS.map((m,i)=>({m:m, v:byMonth.poupancas[i]}));
+              const totR=byMonth.rendimentos.reduce((a,b)=>a+b,0);
+              const totP=byMonth.poupancas.reduce((a,b)=>a+b,0);
+              const totE=byMonth.essenciais.reduce((a,b)=>a+b,0);
+              const totV=byMonth.variaveis.reduce((a,b)=>a+b,0);
+              const saldoAno = totR-totP-totE-totV;
+              const taxaAno = totR>0?totP/totR*100:0;
+              const yearPie = [{name:"Poupanças",value:totP,color:"#2563eb"},{name:"Recorrentes",value:totE,color:"#ea580c"},{name:"Variáveis",value:totV,color:"#dc2626"}].filter(d=>d.value>0);
+              const topYear = Object.keys(yearCats).map(c=>({name:c,value:yearCats[c].value,color:yearCats[c].color}));
+              topYear.sort((a,b)=>b.value-a.value);
+              const totOut = totE+totV+totP;
+              if (yearTxs.length===0) return <div className="bg-white rounded-2xl shadow-sm p-8 text-center text-gray-400 text-sm">Sem dados para {year}</div>;
+              return (
+                <div className="space-y-4">
+                  <div className="bg-white rounded-2xl p-4 shadow-sm">
+                    <div className="text-xs text-gray-400 mb-1">Resumo de {year}</div>
+                    <div className={"text-3xl font-bold "+(saldoAno>=0?"text-green-600":"text-red-500")}>{fmt(saldoAno)}</div>
+                    <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 gap-3">
+                      <div><div className="text-xs text-gray-400">Rendimento</div><div className="text-sm font-bold text-green-600">{fmt(totR)}</div></div>
+                      <div><div className="text-xs text-gray-400">Poupanças</div><div className="text-sm font-bold text-blue-600">{fmt(totP)} ({taxaAno.toFixed(0)}%)</div></div>
+                      <div><div className="text-xs text-gray-400">Recorrentes</div><div className="text-sm font-bold text-orange-600">{fmt(totE)}</div></div>
+                      <div><div className="text-xs text-gray-400">Variáveis</div><div className="text-sm font-bold text-red-600">{fmt(totV)}</div></div>
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-2xl shadow-sm p-4">
+                    <h3 className="font-semibold text-sm text-gray-700 mb-3">Despesas por mês</h3>
+                    <MonthBars data={despMes} color="#ea580c"/>
+                  </div>
+                  <div className="bg-white rounded-2xl shadow-sm p-4">
+                    <h3 className="font-semibold text-sm text-gray-700 mb-3">Rendimentos por mês</h3>
+                    <MonthBars data={rendMes} color="#16a34a"/>
+                  </div>
+                  <div className="bg-white rounded-2xl shadow-sm p-4">
+                    <h3 className="font-semibold text-sm text-gray-700 mb-3">Poupanças por mês</h3>
+                    <MonthBars data={poupMes} color="#2563eb"/>
+                  </div>
+                  {yearPie.length>0 ? (
+                    <div className="bg-white rounded-2xl shadow-sm p-4">
+                      <h3 className="font-semibold text-sm text-gray-700 mb-3">Distribuição do ano</h3>
+                      <SimplePie data={yearPie}/>
+                    </div>
+                  ) : null}
+                  {topYear.length>0 ? (
+                    <div className="bg-white rounded-2xl shadow-sm p-4">
+                      <h3 className="font-semibold text-sm text-gray-700 mb-3">Top Categorias do ano</h3>
+                      <div className="space-y-2.5">
+                        {topYear.slice(0,10).map(c=>{
+                          const pct=totOut>0?c.value/totOut*100:0;
+                          return (
+                            <div key={c.name} className="flex items-center gap-2">
+                              <div className="text-xs text-gray-600 truncate flex-shrink-0" style={{width:120}}>{c.name}</div>
+                              <div className="flex-1 bg-gray-100 rounded-full h-1.5"><div className="h-1.5 rounded-full" style={{width:pct+"%",backgroundColor:c.color}}/></div>
+                              <div className="text-xs font-medium text-gray-700 text-right flex-shrink-0" style={{width:70}}>{fmt(c.value)}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })()}
+          </div>
+        ) : null}
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 z-10">
