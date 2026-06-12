@@ -138,15 +138,22 @@ const autoClassify = desc => {
 
 // ── Parser CSV ───────────────────────────────────────────────────
 const parseCSV = text => {
+  // remove BOM
+  text = text.replace(/^\uFEFF/,"");
   const lines = text.trim().split(/\r?\n/).filter(l=>l.trim());
   if (lines.length < 2) return [];
-  const sep = (lines[0].split(";").length > lines[0].split(",").length) ? ";" : ",";
+  // deteta separador: ; , ou tab — o que aparecer mais na 1ª linha
+  const counts = { ";":(lines[0].match(/;/g)||[]).length, ",":(lines[0].match(/,/g)||[]).length, "\t":(lines[0].match(/\t/g)||[]).length };
+  let sep = ";";
+  if (counts[","]>counts[sep]) sep=",";
+  if (counts["\t"]>counts[sep]) sep="\t";
   const clean = s => s.replace(/^"+|"+$/g,"").trim();
   const headers = lines[0].split(sep).map(h=>normStr(clean(h)));
   return lines.slice(1).map(line=>{
     const cols = line.split(sep).map(clean);
     const obj = {};
     headers.forEach((h,i)=>{ obj[h] = cols[i]||""; });
+    obj._headers = headers;
     return obj;
   });
 };
@@ -162,7 +169,15 @@ const parseDate = s => {
   return todayStr();
 };
 const parseVal = s => {
-  const v = (s||"0").toString().replace("€","").replace(/\s/g,"").replace(",",".");
+  let v = (s||"0").toString().replace("€","").replace(/\s/g,"");
+  const hasComma = v.indexOf(",")>=0, hasDot = v.indexOf(".")>=0;
+  if (hasComma && hasDot) {
+    // o separador decimal é o que aparece mais à direita
+    if (v.lastIndexOf(",") > v.lastIndexOf(".")) v = v.replace(/\./g,"").replace(",",".");
+    else v = v.replace(/,/g,"");
+  } else if (hasComma) {
+    v = v.replace(",",".");
+  }
   return Math.abs(parseFloat(v)||0);
 };
 
@@ -775,6 +790,22 @@ function Budget({ user, onLogout }) {
     if (el) el.value = "";
   };
 
+  // lê o ficheiro como texto; se a codificação UTF-8 falhar (acentos), tenta Windows-1252 (Excel)
+  const readFileText = (file, cb) => {
+    const r1 = new FileReader();
+    r1.onload = ev => {
+      const text = ev.target.result || "";
+      if (text.indexOf("\uFFFD") >= 0) {
+        const r2 = new FileReader();
+        r2.onload = ev2 => cb(ev2.target.result || "");
+        r2.onerror = () => cb(text);
+        r2.readAsText(file, "windows-1252");
+      } else cb(text);
+    };
+    r1.onerror = () => { showToast("⚠️ Não consegui ler o ficheiro"); };
+    r1.readAsText(file, "UTF-8");
+  };
+
   const handleImportFile = (e, mode) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -790,15 +821,21 @@ function Budget({ user, onLogout }) {
       e.target.value = "";
       return;
     }
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const rows = parseCSV(ev.target.result);
-      if (rows.length===0) { showToast("⚠️ Ficheiro vazio ou formato não reconhecido"); return; }
-      if (mode==="excel") processExcelRows(rows);
-      else processBankRows(rows);
-      setImportMode(mode);
-    };
-    reader.readAsText(file, "UTF-8");
+    showToast("📂 A ler o ficheiro...");
+    readFileText(file, text => {
+      const rows = parseCSV(text);
+      if (rows.length===0) { showToast("⚠️ O ficheiro está vazio ou só tem uma linha"); return; }
+      let count = 0;
+      if (mode==="excel") count = processExcelRows(rows);
+      else count = processBankRows(rows);
+      if (count===0) {
+        const hdrs = rows[0]._headers ? rows[0]._headers.join(", ") : "?";
+        showToast("⚠️ Não reconheci os dados. Colunas encontradas: "+hdrs.slice(0,80));
+      } else {
+        setImportMode(mode);
+        showToast("✅ "+count+" linha(s) lida(s) — revê e confirma");
+      }
+    });
     e.target.value = "";
   };
 
@@ -807,14 +844,13 @@ function Budget({ user, onLogout }) {
     rows.forEach(r=>{
       const sk = mapTipo(r["tipo"]||r["seccao"]||"");
       let cat = r["categoria"]||"";
-      // aplica renomeações antigas
       const rn = RENAME_MAP[sk];
       if (rn && rn[cat]) cat = rn[cat];
       if (catsOf(sk).indexOf(cat)<0) cat = catsOf(sk)[catsOf(sk).length-1];
-      const amt = parseVal(r["valor"]);
+      const amt = parseVal(r["valor"]||r["montante"]||r["amount"]);
       if (!amt) return;
-      const date = parseDate(r["data"]);
-      const desc = r["observacoes"]||r["descricao"]||r["obs"]||"";
+      const date = parseDate(r["data"]||r["date"]);
+      const desc = r["observacoes"]||r["observaes"]||r["descricao"]||r["obs"]||r["descrição"]||"";
       const accNm = (r["conta"]||"").toLowerCase();
       const accObj = data.accounts.find(a=>a.name.toLowerCase()===accNm);
       const accId = accObj ? accObj.id : "";
@@ -826,15 +862,16 @@ function Budget({ user, onLogout }) {
     setImportRows(out);
     const sel={}; out.forEach(r=>{ sel[r._id]=!r._dup; });
     setImportSel(sel);
+    return out.length;
   };
 
   const processBankRows = rows => {
     const out = [];
     rows.forEach(r=>{
-      const desc = r["descricao"]||r["description"]||r["designacao"]||r["movimento"]||r["obs"]||"";
-      const amt = parseVal(r["valor"]||r["montante"]||r["amount"]||r["debito"]||r["credito"]);
+      const desc = r["descricao"]||r["description"]||r["designacao"]||r["movimento"]||r["obs"]||r["observacoes"]||"";
+      const amt = parseVal(r["valor"]||r["montante"]||r["amount"]||r["debito"]||r["credito"]||r["importancia"]);
       if (!amt) return;
-      const date = parseDate(r["data"]||r["date"]||r["data mov"]||r["data valor"]);
+      const date = parseDate(r["data"]||r["date"]||r["data mov"]||r["data valor"]||r["data movimento"]||r["data operacao"]);
       const cls = autoClassify(desc);
       const dup = data.txs.some(t=>t.date===date&&Math.abs(t.amt-amt)<0.01);
       out.push({_id:uid(), _dup:dup, sk:cls.sk, cat:cls.cat, amt:amt, date:date, desc:desc});
@@ -842,6 +879,7 @@ function Budget({ user, onLogout }) {
     setImportRows(out);
     const sel={}; out.forEach(r=>{ sel[r._id]=!r._dup; });
     setImportSel(sel);
+    return out.length;
   };
 
   const updateImportRow = (id, field, val) => {
