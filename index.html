@@ -9,6 +9,12 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    if (window.pdfjsLib) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    }
+  </script>
   <style>
     * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
     body { margin: 0; background: #f9fafb; }
@@ -158,6 +164,57 @@ const parseDate = s => {
 const parseVal = s => {
   const v = (s||"0").toString().replace("€","").replace(/\s/g,"").replace(",",".");
   return Math.abs(parseFloat(v)||0);
+};
+
+// ── Parser de extratos em texto/PDF ──────────────────────────────
+// Procura linhas com data + valor(es). Em extratos bancários típicos,
+// o último valor da linha é o saldo, por isso usa o penúltimo quando há 2+.
+const parseStatementText = text => {
+  const out = [];
+  const lines = text.split(/\r?\n/);
+  const dateRe = /(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/;
+  const amtRe = /-?\d{1,3}(?:[\.\s]\d{3})*,\d{2}|-?\d+,\d{2}/g;
+  lines.forEach(line=>{
+    const dm = line.match(dateRe);
+    if (!dm) return;
+    const amounts = line.match(amtRe);
+    if (!amounts || amounts.length===0) return;
+    const amtStr = amounts.length>=2 ? amounts[amounts.length-2] : amounts[0];
+    const amt = parseVal(amtStr);
+    if (!amt) return;
+    const y = dm[3].length===2 ? "20"+dm[3] : dm[3];
+    const date = y+"-"+dm[2].padStart(2,"0")+"-"+dm[1].padStart(2,"0");
+    // descrição = linha sem a(s) data(s) e sem os valores
+    let desc = line.replace(dateRe,"");
+    desc = desc.replace(dateRe,""); // alguns extratos têm 2 datas (mov + valor)
+    amounts.forEach(a=>{ desc = desc.replace(a,""); });
+    desc = desc.replace(/\s+/g," ").trim();
+    out.push({date:date, desc:desc, amt:amt});
+  });
+  return out;
+};
+
+// Extrai texto de um PDF agrupando itens por linha (posição vertical)
+const extractPdfText = async file => {
+  const buf = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({data:buf}).promise;
+  let allText = "";
+  for (let p=1; p<=pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const rows = {};
+    content.items.forEach(it=>{
+      const y = Math.round(it.transform[5]);
+      if (!rows[y]) rows[y] = [];
+      rows[y].push({x:it.transform[4], str:it.str});
+    });
+    const ys = Object.keys(rows).map(Number).sort((a,b)=>b-a);
+    ys.forEach(y=>{
+      rows[y].sort((a,b)=>a.x-b.x);
+      allText += rows[y].map(i=>i.str).join(" ") + "\n";
+    });
+  }
+  return allText;
 };
 
 // ── Gráficos SVG nativos ─────────────────────────────────────────
@@ -693,9 +750,46 @@ function Budget({ user, onLogout }) {
   };
 
   // ── Importação ──
+  const buildBankRows = movs => {
+    const out = [];
+    movs.forEach(m=>{
+      if (!m.amt) return;
+      const cls = autoClassify(m.desc);
+      const dup = data.txs.some(t=>t.date===m.date&&Math.abs(t.amt-m.amt)<0.01);
+      out.push({_id:uid(), _dup:dup, sk:cls.sk, cat:cls.cat, amt:m.amt, date:m.date, desc:m.desc});
+    });
+    setImportRows(out);
+    const sel={}; out.forEach(r=>{ sel[r._id]=!r._dup; });
+    setImportSel(sel);
+    setImportMode("bank");
+    if (out.length===0) showToast("⚠️ Não encontrei movimentos — tenta a opção de colar texto");
+  };
+
+  const importFromPastedText = () => {
+    const el = document.getElementById("pasteArea");
+    const text = el ? el.value : "";
+    if (!text.trim()) { showToast("⚠️ Cola primeiro o texto do extrato"); return; }
+    const movs = parseStatementText(text);
+    if (movs.length===0) { showToast("⚠️ Não encontrei movimentos no texto colado"); return; }
+    buildBankRows(movs);
+    if (el) el.value = "";
+  };
+
   const handleImportFile = (e, mode) => {
     const file = e.target.files[0];
     if (!file) return;
+    const isPdf = /\.pdf$/i.test(file.name) || file.type==="application/pdf";
+    if (isPdf) {
+      if (!window.pdfjsLib) { showToast("⚠️ Leitor de PDF indisponível — usa a opção de colar texto"); e.target.value=""; return; }
+      showToast("📄 A ler o PDF...");
+      extractPdfText(file).then(text=>{
+        const movs = parseStatementText(text);
+        if (movs.length===0) { showToast("⚠️ Não consegui extrair movimentos deste PDF — tenta colar o texto"); return; }
+        buildBankRows(movs);
+      }).catch(()=>{ showToast("⚠️ Erro ao ler o PDF — tenta a opção de colar texto"); });
+      e.target.value = "";
+      return;
+    }
     const reader = new FileReader();
     reader.onload = ev => {
       const rows = parseCSV(ev.target.result);
@@ -1340,9 +1434,18 @@ function Budget({ user, onLogout }) {
                       </div>
                     ) : null}
                     <label className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-orange-200 rounded-xl py-4 text-sm text-orange-600 font-medium cursor-pointer hover:bg-orange-50">
-                      <span>📂 Escolher extrato CSV</span>
-                      <input type="file" accept=".csv,.txt" className="hidden" onChange={e=>handleImportFile(e,"bank")}/>
+                      <span>📂 Escolher extrato (CSV ou PDF)</span>
+                      <input type="file" accept=".csv,.txt,.pdf" className="hidden" onChange={e=>handleImportFile(e,"bank")}/>
                     </label>
+                    <div className="pt-2">
+                      <div className="text-xs text-gray-400 mb-1.5">Ou cola o texto do extrato (abre o PDF, Ctrl+A, Ctrl+C e cola aqui):</div>
+                      <textarea id="pasteArea" rows="4" placeholder="Cola aqui as linhas do extrato..."
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs focus:border-orange-400 outline-none resize-y"></textarea>
+                      <button onClick={importFromPastedText}
+                        className="w-full mt-2 text-white rounded-xl py-2.5 font-semibold text-xs" style={{backgroundColor:"#ea580c"}}>
+                        📋 Processar texto colado
+                      </button>
+                    </div>
                     <div className="bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 text-xs text-amber-700">
                       💡 A app classifica automaticamente (Pingo Doce → Supermercado, Galp → Combustível...). Revês tudo antes de importar.
                     </div>
