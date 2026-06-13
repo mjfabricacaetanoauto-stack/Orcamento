@@ -10,7 +10,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script>
     if (window.pdfjsLib) {
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -273,14 +273,14 @@ const parseActivoBankText = (text, year) => {
 // Usa sheet_to_csv (mais robusto) para encontrar o cabeçalho e parseia
 // como CSV normal. Montantes negativos = débito, positivos = crédito.
 // Datas com dia/mês invertidos são corrigidas automaticamente.
-const parseCGDXlsx = async file => {
-  if (!window.XLSX) return null;
+const parseCGDXlsx = async (file, _onDiag) => {
+  if (!window.XLSX) return {err:"sem-lib"};
   try {
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, {type:"array"});
-    if (!wb.SheetNames.length) return null;
+    const ab = await file.arrayBuffer();
+    const wb = XLSX.read(new Uint8Array(ab), {type:"array"});
+    if (!wb.SheetNames.length) return {err:"sem-sheets"};
     const ws = wb.Sheets[wb.SheetNames[0]];
-    // Converte para CSV com ponto-e-vírgula e datas em DD-MM-YYYY
+    if (!ws) return {err:"sem-ws"};
     const csv = XLSX.utils.sheet_to_csv(ws, {FS:";", RS:"\n", dateNF:"DD-MM-YYYY"});
     const csvLines = csv.split("\n");
     // Encontra a linha do cabeçalho (tem "data" e "montante")
@@ -289,22 +289,24 @@ const parseCGDXlsx = async file => {
       const n = normStr(csvLines[i]);
       if (n.includes("data mov") && n.includes("montante")) { hLineIdx = i; break; }
     }
-    if (hLineIdx < 0) return null;
-    // Parseia a partir do cabeçalho com o parseCSV existente
+    if (hLineIdx < 0) {
+      // Diagnóstico: mostra as primeiras linhas que têm conteúdo
+      const sample = csvLines.filter(l=>l.replace(/;/g,"").trim()).slice(0,5).map(l=>l.slice(0,60)).join(" | ");
+      return {err:"sem-header", diag: sample};
+    }
     const rows = parseCSV(csvLines.slice(hLineIdx).join("\n"));
-    if (!rows.length) return null;
+    if (!rows.length) return {err:"sem-rows"};
     const hdrs = rows[0]._headers || [];
     const dateKey = hdrs.find(h => h.includes("data mov"));
     const amtKey  = hdrs.find(h => h.includes("montante"));
     const descKey = hdrs.find(h => h.includes("descri"));
-    if (!dateKey || !amtKey) return null;
+    if (!dateKey || !amtKey) return {err:"sem-cols", diag: hdrs.join("|")};
     const today = todayStr();
     const out = [];
     rows.forEach(r => {
       const dateStr = (r[dateKey]||"").trim();
       if (!dateStr) return;
       let date = parseDate(dateStr);
-      // Corrige datas com dia/mês invertidos que resultam em datas futuras
       if (date > today) {
         const mp = dateStr.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
         if (mp) {
@@ -321,10 +323,9 @@ const parseCGDXlsx = async file => {
       const desc = String(descKey ? (r[descKey]||"") : (r[hdrs[2]]||"")).trim();
       out.push({date, desc, amt, isCredit});
     });
-    return out.length > 0 ? out : null;
+    return out.length > 0 ? {movs: out} : {err:"sem-dados"};
   } catch(e) {
-    console.error("CGD XLSX:", e);
-    return null;
+    return {err:"excecao", diag: e.message};
   }
 };
 
@@ -964,11 +965,24 @@ function Budget({ user, onLogout }) {
     if (isXlsx) {
       if (!window.XLSX) { showToast("⚠️ Leitor de Excel não disponível — aguarda e tenta de novo"); e.target.value=""; return; }
       showToast("📊 A ler o ficheiro Excel...");
-      parseCGDXlsx(file).then(movs => {
-        if (!movs) { showToast("⚠️ Não reconheci este Excel — esperado extrato CGD (colunas Data mov./Montante)"); return; }
-        buildBankRows(movs);
-        showToast("✅ "+movs.length+" movimento(s) CGD lido(s) — revê e confirma");
-      }).catch(()=>{ showToast("⚠️ Erro ao ler o ficheiro Excel"); });
+      parseCGDXlsx(file).then(res => {
+        if (res.err) {
+          const msg = {
+            "sem-lib":"Biblioteca Excel não carregou — recarrega a página",
+            "sem-sheets":"Ficheiro Excel sem folhas",
+            "sem-ws":"Folha de cálculo não encontrada",
+            "sem-header":"Cabeçalho não encontrado"+(res.diag?" (primeiras linhas: "+res.diag+")":""),
+            "sem-rows":"Sem dados após o cabeçalho",
+            "sem-cols":"Colunas não encontradas"+(res.diag?" ("+res.diag+")":""),
+            "sem-dados":"Nenhum movimento encontrado",
+            "excecao":"Erro ao ler Excel"+(res.diag?" — "+res.diag:""),
+          }[res.err] || "Erro desconhecido: "+res.err;
+          showToast("⚠️ "+msg);
+          return;
+        }
+        buildBankRows(res.movs);
+        showToast("✅ "+res.movs.length+" movimento(s) CGD lido(s) — revê e confirma");
+      }).catch(e=>{ showToast("⚠️ Erro inesperado: "+e.message); });
       e.target.value = "";
       return;
     }
