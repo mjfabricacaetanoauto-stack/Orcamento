@@ -246,9 +246,20 @@ const parseActivoBankText = (text, year) => {
   const dateRe = /^\s*(\d{1,2})\.(\d{2})\s/;
   // Montantes: "1 234.56" ou "1234.56" ou "12.56"
   const amtRe = /\b(\d{1,3}(?:\s\d{3})*\.\d{2}|\d+\.\d{2})\b/g;
+  let lastTx = null;
   lines.forEach(line => {
     const dm = line.match(dateRe);
-    if (!dm) return;
+    if (!dm) {
+      // Linha sem data — pode ser descrição na linha seguinte à transação
+      if (lastTx && !lastTx.desc) {
+        const trimmed = line.trim();
+        // Ignora linhas vazias, números de página ou totais
+        if (trimmed && !/^\d+$/.test(trimmed) && !/^(SALDO|TOTAL|Pág|Page)/i.test(trimmed)) {
+          lastTx.desc = trimmed;
+        }
+      }
+      return;
+    }
     // Remove as datas do início (pode haver 2: DATA LANC e DATA VALOR)
     let rest = line.replace(dateRe, "").replace(dateRe, "");
     const amounts = [];
@@ -264,7 +275,9 @@ const parseActivoBankText = (text, year) => {
     let desc = rest;
     amounts.forEach(a => { desc = desc.replace(a, ""); });
     desc = desc.replace(/\s+/g, " ").trim();
-    out.push({date, desc, amt});
+    const tx = {date, desc, amt};
+    out.push(tx);
+    lastTx = tx;
   });
   return out;
 };
