@@ -10,6 +10,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script>
     if (window.pdfjsLib) {
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -123,7 +124,10 @@ const AUTO_RULES = [
   { kw:["emel","parque","parking","estacionamento"], sk:"variaveis", cat:"Estacionamentos" },
   { kw:["fnac","worten","amazon"], sk:"variaveis", cat:"Livros/Gadgets/Cursos" },
   { kw:["fidelidade","allianz","ageas","tranquilidade","axa","zurich"], sk:"essenciais", cat:"Seguro - carro" },
-  { kw:["vencimento","ordenado","salario"], sk:"rendimentos", cat:"Vencimento Base" }
+  { kw:["vencimento","ordenado","salario"], sk:"rendimentos", cat:"Vencimento Base" },
+  { kw:["refeitorio","cantina"], sk:"variaveis", cat:"Restaurantes" },
+  { kw:["clinica","fisio","ortopedi","hospital","saude"], sk:"essenciais", cat:"Consultas médicas" },
+  { kw:["manut conta","comissao cobrada","anuidade cartao"], sk:"essenciais", cat:"Outras Despesas Recorrentes" }
 ];
 const autoClassify = desc => {
   const d = normStr(desc);
@@ -230,6 +234,91 @@ const extractPdfText = async file => {
     });
   }
   return allText;
+};
+
+// ── Parser ActivoBank PDF ────────────────────────────────────────
+// Datas no formato D.MM (sem ano), débito e crédito em colunas separadas,
+// decimal com ponto e milhares com espaço (ex: 1 114.50)
+const parseActivoBankText = (text, year) => {
+  const out = [];
+  const lines = text.split(/\r?\n/);
+  // Linha de transação começa com D.MM seguido de espaço
+  const dateRe = /^\s*(\d{1,2})\.(\d{2})\s/;
+  // Montantes: "1 234.56" ou "1234.56" ou "12.56"
+  const amtRe = /\b(\d{1,3}(?:\s\d{3})*\.\d{2}|\d+\.\d{2})\b/g;
+  lines.forEach(line => {
+    const dm = line.match(dateRe);
+    if (!dm) return;
+    // Remove as datas do início (pode haver 2: DATA LANC e DATA VALOR)
+    let rest = line.replace(dateRe, "").replace(dateRe, "");
+    const amounts = [];
+    let m;
+    while ((m = amtRe.exec(rest)) !== null) amounts.push(m[1]);
+    amtRe.lastIndex = 0;
+    if (!amounts.length) return;
+    // Penúltimo = montante da transação, último = saldo
+    const amtStr = amounts.length >= 2 ? amounts[amounts.length - 2] : amounts[0];
+    const amt = parseVal(amtStr);
+    if (!amt) return;
+    const date = year + "-" + dm[2] + "-" + dm[1].padStart(2, "0");
+    let desc = rest;
+    amounts.forEach(a => { desc = desc.replace(a, ""); });
+    desc = desc.replace(/\s+/g, " ").trim();
+    out.push({date, desc, amt});
+  });
+  return out;
+};
+
+// ── Parser CGD XLSX ──────────────────────────────────────────────
+// O extrato CGD exporta um XLSX com cabeçalho nas primeiras linhas e colunas:
+// "Data mov." | "Data-valor" | "Descrição" | "Montante" | "Saldo..."
+// Montantes negativos = débito (despesa), positivos = crédito (rendimento)
+// Nota: o CGD por vezes grava datas com dia/mês invertidos — detetamos e corrigimos
+const parseCGDXlsx = async file => {
+  if (!window.XLSX) return null;
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, {type:"array"});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const allRows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:false, dateNF:"DD-MM-YYYY"});
+  // Procura linha de cabeçalho (tem "data mov" e "montante")
+  let hIdx = -1;
+  for (let i = 0; i < Math.min(allRows.length, 20); i++) {
+    const cells = (allRows[i]||[]).filter(Boolean).map(c => normStr(String(c)));
+    const joined = cells.join(" ");
+    if (joined.includes("data mov") && joined.includes("montante")) { hIdx = i; break; }
+  }
+  if (hIdx < 0) return null;
+  const headers = (allRows[hIdx]||[]).map(h => normStr(String(h||"")));
+  const iDate = headers.findIndex(h => h.includes("data mov"));
+  const iDesc = headers.findIndex(h => h.includes("descri"));
+  const iAmt  = headers.findIndex(h => h.includes("montante"));
+  if (iDate < 0 || iAmt < 0) return null;
+  const today = todayStr();
+  const out = [];
+  for (let i = hIdx + 1; i < allRows.length; i++) {
+    const row = allRows[i];
+    if (!row || row[iDate] == null) continue;
+    const dateStr = String(row[iDate]).trim();
+    if (!dateStr || dateStr === "null") continue;
+    let date = parseDate(dateStr);
+    // CGD pode gravar datas com dia/mês invertidos — se data for futura tenta inverter
+    if (date > today) {
+      const mp = dateStr.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
+      if (mp) {
+        const y = mp[3].length === 2 ? "20"+mp[3] : mp[3];
+        const alt = y+"-"+mp[1].padStart(2,"0")+"-"+mp[2].padStart(2,"0");
+        if (alt <= today) date = alt;
+      }
+    }
+    const amtStr = String(row[iAmt]||"").trim();
+    if (!amtStr || amtStr === "null") continue;
+    const isCredit = !amtStr.startsWith("-");
+    const amt = parseVal(amtStr);
+    if (!amt) continue;
+    const desc = String(row[iDesc >= 0 ? iDesc : 2]||"").trim();
+    out.push({date, desc, amt, isCredit});
+  }
+  return out.length > 0 ? out : null;
 };
 
 // ── Gráficos SVG nativos ─────────────────────────────────────────
@@ -807,7 +896,13 @@ function Budget({ user, onLogout }) {
     const out = [];
     movs.forEach(m=>{
       if (!m.amt) return;
-      const cls = autoClassify(m.desc);
+      let cls = autoClassify(m.desc);
+      // Afina com o sinal do extrato quando disponível (CGD/ActivoBank)
+      if (m.isCredit === true && cls.sk !== "rendimentos") {
+        cls = {sk:"rendimentos", cat:"Outros Rendimentos"};
+      } else if (m.isCredit === false && cls.sk === "rendimentos") {
+        cls = {sk:"variaveis", cat:"Outras Despesas Variáveis"};
+      }
       const dup = data.txs.some(t=>t.date===m.date&&Math.abs(t.amt-m.amt)<0.01);
       out.push({_id:uid(), _dup:dup, sk:cls.sk, cat:cls.cat, amt:m.amt, date:m.date, desc:m.desc});
     });
@@ -822,7 +917,14 @@ function Budget({ user, onLogout }) {
     const el = document.getElementById("pasteArea");
     const text = el ? el.value : "";
     if (!text.trim()) { showToast("⚠️ Cola primeiro o texto do extrato"); return; }
-    const movs = parseStatementText(text);
+    let movs = [];
+    // Tenta parser ActivoBank se o texto tiver o padrão D.MM
+    if (text.includes("ActivoBank") || /^\s*\d{1,2}\.\d{2}\s/m.test(text)) {
+      const ym = text.match(/(\d{4})\/\d{2}\/\d{2}/) || text.match(/(\d{4})\//);
+      const year = (ym && ym[1]) || new Date().getFullYear().toString();
+      movs = parseActivoBankText(text, year);
+    }
+    if (movs.length === 0) movs = parseStatementText(text);
     if (movs.length===0) { showToast("⚠️ Não encontrei movimentos no texto colado"); return; }
     buildBankRows(movs);
     if (el) el.value = "";
@@ -847,18 +949,50 @@ function Budget({ user, onLogout }) {
   const handleImportFile = (e, mode) => {
     const file = e.target.files[0];
     if (!file) return;
-    const isPdf = /\.pdf$/i.test(file.name) || file.type==="application/pdf";
+    const name = file.name || "";
+    const isXlsx = /\.xlsx?$/i.test(name) || file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || file.type === "application/vnd.ms-excel";
+    const isPdf  = /\.pdf$/i.test(name) || file.type === "application/pdf";
+
+    // ── XLSX (extrato CGD) ──────────────────────────────────────
+    if (isXlsx) {
+      if (!window.XLSX) { showToast("⚠️ Leitor de Excel não disponível — aguarda e tenta de novo"); e.target.value=""; return; }
+      showToast("📊 A ler o ficheiro Excel...");
+      parseCGDXlsx(file).then(movs => {
+        if (!movs) { showToast("⚠️ Não reconheci este Excel — esperado extrato CGD (colunas Data mov./Montante)"); return; }
+        buildBankRows(movs);
+        showToast("✅ "+movs.length+" movimento(s) CGD lido(s) — revê e confirma");
+      }).catch(()=>{ showToast("⚠️ Erro ao ler o ficheiro Excel"); });
+      e.target.value = "";
+      return;
+    }
+
+    // ── PDF (ActivoBank ou genérico) ────────────────────────────
     if (isPdf) {
       if (!window.pdfjsLib) { showToast("⚠️ Leitor de PDF indisponível — usa a opção de colar texto"); e.target.value=""; return; }
       showToast("📄 A ler o PDF...");
       extractPdfText(file).then(text=>{
+        // Tenta parser específico do ActivoBank (datas em D.MM, decimal com ponto)
+        if (text.includes("ActivoBank") || text.includes("ACTYPTPL") || text.includes("EXTRATO COMBINADO")) {
+          const ym = text.match(/(\d{4})\/\d{2}\/\d{2}/) || text.match(/EXTRATO\s+DE\s+\d{4}\/(\d{4})/) || text.match(/(\d{4})\//);
+          const year = (ym && (ym[1]||ym[2])) || new Date().getFullYear().toString();
+          const movs = parseActivoBankText(text, year);
+          if (movs.length > 0) {
+            buildBankRows(movs);
+            showToast("✅ "+movs.length+" movimento(s) ActivoBank lido(s) — revê e confirma");
+            return;
+          }
+        }
+        // Fallback: parser genérico (datas D/M/AAAA, decimal com vírgula)
         const movs = parseStatementText(text);
         if (movs.length===0) { showToast("⚠️ Não consegui extrair movimentos deste PDF — tenta colar o texto"); return; }
         buildBankRows(movs);
+        showToast("✅ "+movs.length+" movimento(s) lido(s) — revê e confirma");
       }).catch(()=>{ showToast("⚠️ Erro ao ler o PDF — tenta a opção de colar texto"); });
       e.target.value = "";
       return;
     }
+
+    // ── CSV / TXT ───────────────────────────────────────────────
     showToast("📂 A ler o ficheiro...");
     readFileText(file, text => {
       const rows = parseCSV(text);
@@ -1515,7 +1649,7 @@ function Budget({ user, onLogout }) {
                 <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-100">
                     <div className="font-semibold text-sm text-gray-700">🏦 Importar extrato bancário</div>
-                    <div className="text-xs text-gray-400 mt-0.5">CSV do banco — classificação automática</div>
+                    <div className="text-xs text-gray-400 mt-0.5">CGD (XLSX), ActivoBank (PDF) ou qualquer banco (CSV) — classificação automática</div>
                   </div>
                   <div className="px-4 py-4 space-y-3">
                     {data.accounts.length>0 ? (
@@ -1525,8 +1659,8 @@ function Budget({ user, onLogout }) {
                       </div>
                     ) : null}
                     <label className="w-full flex items-center justify-center gap-2 border-2 border-dashed border-orange-200 rounded-xl py-4 text-sm text-orange-600 font-medium cursor-pointer hover:bg-orange-50">
-                      <span>📂 Escolher extrato (CSV ou PDF)</span>
-                      <input type="file" accept=".csv,.txt,.pdf" className="hidden" onChange={e=>handleImportFile(e,"bank")}/>
+                      <span>📂 Escolher extrato (CSV, XLSX ou PDF)</span>
+                      <input type="file" accept=".csv,.txt,.xlsx,.xls,.pdf" className="hidden" onChange={e=>handleImportFile(e,"bank")}/>
                     </label>
                     <div className="pt-2">
                       <div className="text-xs text-gray-400 mb-1.5">Ou cola o texto do extrato (abre o PDF, Ctrl+A, Ctrl+C e cola aqui):</div>
