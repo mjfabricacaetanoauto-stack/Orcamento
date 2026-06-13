@@ -270,55 +270,62 @@ const parseActivoBankText = (text, year) => {
 };
 
 // ── Parser CGD XLSX ──────────────────────────────────────────────
-// O extrato CGD exporta um XLSX com cabeçalho nas primeiras linhas e colunas:
-// "Data mov." | "Data-valor" | "Descrição" | "Montante" | "Saldo..."
-// Montantes negativos = débito (despesa), positivos = crédito (rendimento)
-// Nota: o CGD por vezes grava datas com dia/mês invertidos — detetamos e corrigimos
+// Usa sheet_to_csv (mais robusto) para encontrar o cabeçalho e parseia
+// como CSV normal. Montantes negativos = débito, positivos = crédito.
+// Datas com dia/mês invertidos são corrigidas automaticamente.
 const parseCGDXlsx = async file => {
   if (!window.XLSX) return null;
-  const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, {type:"array"});
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const allRows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:false, dateNF:"DD-MM-YYYY"});
-  // Procura linha de cabeçalho (tem "data mov" e "montante")
-  let hIdx = -1;
-  for (let i = 0; i < Math.min(allRows.length, 20); i++) {
-    const cells = (allRows[i]||[]).filter(Boolean).map(c => normStr(String(c)));
-    const joined = cells.join(" ");
-    if (joined.includes("data mov") && joined.includes("montante")) { hIdx = i; break; }
-  }
-  if (hIdx < 0) return null;
-  const headers = (allRows[hIdx]||[]).map(h => normStr(String(h||"")));
-  const iDate = headers.findIndex(h => h.includes("data mov"));
-  const iDesc = headers.findIndex(h => h.includes("descri"));
-  const iAmt  = headers.findIndex(h => h.includes("montante"));
-  if (iDate < 0 || iAmt < 0) return null;
-  const today = todayStr();
-  const out = [];
-  for (let i = hIdx + 1; i < allRows.length; i++) {
-    const row = allRows[i];
-    if (!row || row[iDate] == null) continue;
-    const dateStr = String(row[iDate]).trim();
-    if (!dateStr || dateStr === "null") continue;
-    let date = parseDate(dateStr);
-    // CGD pode gravar datas com dia/mês invertidos — se data for futura tenta inverter
-    if (date > today) {
-      const mp = dateStr.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
-      if (mp) {
-        const y = mp[3].length === 2 ? "20"+mp[3] : mp[3];
-        const alt = y+"-"+mp[1].padStart(2,"0")+"-"+mp[2].padStart(2,"0");
-        if (alt <= today) date = alt;
-      }
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, {type:"array"});
+    if (!wb.SheetNames.length) return null;
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    // Converte para CSV com ponto-e-vírgula e datas em DD-MM-YYYY
+    const csv = XLSX.utils.sheet_to_csv(ws, {FS:";", RS:"\n", dateNF:"DD-MM-YYYY"});
+    const csvLines = csv.split("\n");
+    // Encontra a linha do cabeçalho (tem "data" e "montante")
+    let hLineIdx = -1;
+    for (let i = 0; i < csvLines.length; i++) {
+      const n = normStr(csvLines[i]);
+      if (n.includes("data mov") && n.includes("montante")) { hLineIdx = i; break; }
     }
-    const amtStr = String(row[iAmt]||"").trim();
-    if (!amtStr || amtStr === "null") continue;
-    const isCredit = !amtStr.startsWith("-");
-    const amt = parseVal(amtStr);
-    if (!amt) continue;
-    const desc = String(row[iDesc >= 0 ? iDesc : 2]||"").trim();
-    out.push({date, desc, amt, isCredit});
+    if (hLineIdx < 0) return null;
+    // Parseia a partir do cabeçalho com o parseCSV existente
+    const rows = parseCSV(csvLines.slice(hLineIdx).join("\n"));
+    if (!rows.length) return null;
+    const hdrs = rows[0]._headers || [];
+    const dateKey = hdrs.find(h => h.includes("data mov"));
+    const amtKey  = hdrs.find(h => h.includes("montante"));
+    const descKey = hdrs.find(h => h.includes("descri"));
+    if (!dateKey || !amtKey) return null;
+    const today = todayStr();
+    const out = [];
+    rows.forEach(r => {
+      const dateStr = (r[dateKey]||"").trim();
+      if (!dateStr) return;
+      let date = parseDate(dateStr);
+      // Corrige datas com dia/mês invertidos que resultam em datas futuras
+      if (date > today) {
+        const mp = dateStr.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
+        if (mp) {
+          const y = mp[3].length===2 ? "20"+mp[3] : mp[3];
+          const alt = y+"-"+mp[1].padStart(2,"0")+"-"+mp[2].padStart(2,"0");
+          if (alt <= today) date = alt;
+        }
+      }
+      const amtStr = (r[amtKey]||"").trim();
+      if (!amtStr) return;
+      const isCredit = !amtStr.startsWith("-");
+      const amt = parseVal(amtStr);
+      if (!amt) return;
+      const desc = String(descKey ? (r[descKey]||"") : (r[hdrs[2]]||"")).trim();
+      out.push({date, desc, amt, isCredit});
+    });
+    return out.length > 0 ? out : null;
+  } catch(e) {
+    console.error("CGD XLSX:", e);
+    return null;
   }
-  return out.length > 0 ? out : null;
 };
 
 // ── Gráficos SVG nativos ─────────────────────────────────────────
