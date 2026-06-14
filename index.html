@@ -1112,7 +1112,10 @@ function Budget({ user, onLogout }) {
     setImportRows(rows=>rows.map(r=>{
       if (r._id!==id) return r;
       const nr = Object.assign({}, r); nr[field]=val;
-      if (field==="sk" && catsOf(val).indexOf(nr.cat)<0) nr.cat=catsOf(val)[catsOf(val).length-1];
+      if (field==="sk") {
+        if (val==="transfer") { nr.cat=""; nr.accFrom=""; nr.accTo=""; }
+        else if (SECTIONS[val] && catsOf(val).indexOf(nr.cat)<0) nr.cat=catsOf(val)[catsOf(val).length-1];
+      }
       return nr;
     }));
   };
@@ -1160,23 +1163,26 @@ function Budget({ user, onLogout }) {
   const TxRow = props => {
     const t = props.t;
     const d = txDisplay(t);
+    const dateStr = t.date.slice(8)+"/"+t.date.slice(5,7);
+    const subLine = dateStr+(isTransfer(t)?"":" · "+t.cat)+(d.accInfo?" · "+d.accInfo:"");
     return (
-      <div className="px-4 py-2.5 border-b border-gray-50 flex items-center gap-3">
+      <div className={"px-4 py-2.5 border-b border-gray-50 flex items-center gap-3"+(!selMode?" cursor-pointer":"")}
+        onClick={!selMode?()=>openEditTx(t):undefined}>
         {selMode&&props.deletable ? (
           <input type="checkbox" checked={!!selTxs[t.id]}
             onChange={e=>{ const v=e.target.checked; setSelTxs(prev=>Object.assign({},prev,{[t.id]:v})); }}
+            onClick={e=>e.stopPropagation()}
             className="flex-shrink-0"/>
         ) : (
           <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-sm" style={{backgroundColor:d.bg}}>{d.emoji}</div>
         )}
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-gray-700 truncate">{t.desc||t.cat}</div>
-          <div className="text-xs text-gray-400 truncate">{(isTransfer(t)?"":t.cat+" · ")+(d.accInfo?d.accInfo+" · ":"")+t.date.slice(5).replace("-","/")}</div>
+          <div className="text-xs text-gray-400 truncate">{subLine}</div>
         </div>
         <div className="text-sm font-semibold flex-shrink-0" style={{color:d.color}}>{d.sign}{fmt(t.amt)}</div>
         {props.deletable&&!selMode ? (
-          <div className="flex items-center flex-shrink-0">
-            <button onClick={()=>openEditTx(t)} className="text-gray-300 hover:text-blue-500 px-1 text-sm">✏️</button>
+          <div className="flex items-center flex-shrink-0" onClick={e=>e.stopPropagation()}>
             <button onClick={()=>askDelTx(t)} className="text-gray-300 hover:text-red-400 text-xl leading-none px-1">×</button>
           </div>
         ) : null}
@@ -1403,7 +1409,7 @@ function Budget({ user, onLogout }) {
               </div>
               {monthTxs.length===0
                 ? <div className="px-4 py-6 text-center text-xs text-gray-400">Sem lançamentos em {MS[month]}<br/><span className="text-gray-300">Vai a ➕ Lançar para começar</span></div>
-                : monthTxs.slice().reverse().slice(0,5).map(t=><TxRow key={t.id} t={t}/>)}
+                : monthTxs.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5).map(t=><TxRow key={t.id} t={t}/>)}
             </div>
           </div>
         ) : null}
@@ -1487,7 +1493,7 @@ function Budget({ user, onLogout }) {
                     {selMode?"✕ Cancelar":"☑️ Selecionar"}
                   </button>
                 </div>
-                {monthTxs.slice().reverse().map(t=><TxRow key={t.id} t={t} deletable={true}/>)}
+                {monthTxs.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(t=><TxRow key={t.id} t={t} deletable={true}/>)}
                 {selMode ? (
                   <div className="px-4 py-3 bg-gray-50 flex items-center justify-between">
                     <div className="text-xs text-gray-500">{nSelTx} selecionado{nSelTx!==1?"s":""}</div>
@@ -1736,7 +1742,7 @@ function Budget({ user, onLogout }) {
                 </div>
                 <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
                   {importRows.map(r=>{
-                    const s = SECTIONS[r.sk]||SECTIONS.variaveis;
+                    const s = r.sk==="transfer" ? TRANSFER : (SECTIONS[r.sk]||SECTIONS.variaveis);
                     const sel = !!importSel[r._id];
                     return (
                       <div key={r._id} className={"px-4 py-3 border-b border-gray-50"+(sel?"":" opacity-40")+(r._dup?" bg-amber-50":"")}>
@@ -1753,11 +1759,29 @@ function Budget({ user, onLogout }) {
                               <select value={r.sk} onChange={e=>updateImportRow(r._id,"sk",e.target.value)}
                                 className="border border-gray-200 rounded px-2 py-1 text-xs bg-white">
                                 {Object.keys(SECTIONS).map(k=><option key={k} value={k}>{SECTIONS[k].emoji+" "+SECTIONS[k].label}</option>)}
+                                <option value="transfer">{TRANSFER.emoji+" "+TRANSFER.label}</option>
                               </select>
-                              <select value={r.cat} onChange={e=>updateImportRow(r._id,"cat",e.target.value)}
-                                className="border border-gray-200 rounded px-2 py-1 text-xs bg-white">
-                                {catsOf(r.sk).map(c=><option key={c} value={c}>{c}</option>)}
-                              </select>
+                              {r.sk==="transfer" ? (
+                                data.accounts.length>1 ? (
+                                  <React.Fragment>
+                                    <select value={r.accFrom||""} onChange={e=>updateImportRow(r._id,"accFrom",e.target.value)}
+                                      className="border border-gray-200 rounded px-2 py-1 text-xs bg-white">
+                                      <option value="">— sai de —</option>
+                                      {data.accounts.map(a=><option key={a.id} value={a.id}>{(ACC_TYPES[a.type]?ACC_TYPES[a.type].emoji:"💼")+" "+a.name}</option>)}
+                                    </select>
+                                    <select value={r.accTo||""} onChange={e=>updateImportRow(r._id,"accTo",e.target.value)}
+                                      className="border border-gray-200 rounded px-2 py-1 text-xs bg-white">
+                                      <option value="">— entra em —</option>
+                                      {data.accounts.map(a=><option key={a.id} value={a.id}>{(ACC_TYPES[a.type]?ACC_TYPES[a.type].emoji:"💼")+" "+a.name}</option>)}
+                                    </select>
+                                  </React.Fragment>
+                                ) : <span className="text-xs text-gray-400 self-center">Cria contas primeiro</span>
+                              ) : (
+                                <select value={r.cat} onChange={e=>updateImportRow(r._id,"cat",e.target.value)}
+                                  className="border border-gray-200 rounded px-2 py-1 text-xs bg-white">
+                                  {catsOf(r.sk).map(c=><option key={c} value={c}>{c}</option>)}
+                                </select>
+                              )}
                             </div>
                           </div>
                         </div>
